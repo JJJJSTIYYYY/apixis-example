@@ -1,0 +1,8 @@
+.venv/
+.apix/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+.ruff_cache/

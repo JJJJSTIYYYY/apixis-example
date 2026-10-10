@@ -1,0 +1,4 @@
+LOG:
+  debug_level: "ERROR"
+  trace: false
+  show_event_dispatch: false
