@@ -18,7 +18,7 @@ async def main():
     async def approve(call):
         return True
 
-    async def reply(messages, tools, on_text):
+    async def reply(messages, tools, on_text, **selection):
         if messages[-1]["role"] == "tool":
             return {"role": "assistant", "content": messages[-1]["content"]}
         identity = next(m["content"] for m in messages if m["role"] == "user")
@@ -54,7 +54,7 @@ async def main():
             for i in range(160)
         ]
         with (
-            patch.object(agent, "stream_deepseek", reply),
+            patch.object(agent, "stream_reply", reply),
             patch("example.core.events.execute_tool", execute),
         ):
             results = await asyncio.wait_for(

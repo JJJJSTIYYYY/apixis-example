@@ -2,9 +2,11 @@
 
 import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
+from my_llm import IncompleteStreamError, ResponseFailedError, StreamError
+from openai import AuthenticationError
 from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
@@ -14,6 +16,15 @@ from example.ui.errors import explain_error
 
 
 class UITests(unittest.TestCase):
+    def test_output_limit_can_switch_models_and_retry_without_restarting(self):
+        message, hint = explain_error(
+            StreamError("回复达到输出长度上限"), can_retry=True
+        )
+        self.assertIn("输出长度上限", message)
+        self.assertIn("切换", hint)
+        self.assertIn("/retry", hint)
+        self.assertNotIn("重新启动", hint)
+
     def setUp(self):
         self.output = io.StringIO()
         self.console = Console(file=self.output, width=38, height=12, color_system=None)
@@ -44,6 +55,20 @@ class UITests(unittest.TestCase):
             self.assertEqual(self.ui.ask(), "hello")
         self.assertIn("朋友[/]", read.call_args.args[0])
         self.assertIn("测试[/]标题", self.output.getvalue())
+
+    def test_username_commands_list_users_and_keep_prompting(self):
+        list_users = Mock(side_effect=lambda: self.ui.list_users(["旧用户[/]"]))
+        with patch(
+            "builtins.input", side_effect=["/list-user", "/unknown", "", " 新用户 "]
+        ):
+            self.assertEqual(self.ui.ask_username(on_list_users=list_users), "新用户")
+        list_users.assert_called_once_with()
+        self.assertIn("旧用户[/]", self.output.getvalue())
+        self.assertIn("未知命令", self.output.getvalue())
+
+    def test_empty_user_list_explains_how_to_continue(self):
+        self.ui.list_users([])
+        self.assertIn("还没有已记录的用户", self.output.getvalue())
 
     def test_folded_output_can_be_expanded_without_markup_leaking(self):
         result = "\n".join(f"line-{i:02d}" for i in range(40))
@@ -148,14 +173,23 @@ class UITests(unittest.TestCase):
     def test_authentication_error_gives_an_action_without_server_body(self):
         request = httpx.Request("POST", "https://llm.test")
         response = httpx.Response(401, request=request, text="PRIVATE SERVER BODY")
-        error = httpx.HTTPStatusError(
-            "PRIVATE SERVER BODY", request=request, response=response
+        error = AuthenticationError(
+            "PRIVATE SERVER BODY", response=response, body={"error": "PRIVATE"}
         )
         message, hint = explain_error(error, can_retry=True)
         self.assertIn("凭证", message)
-        self.assertIn("DEEPSEEK_API_KEY", hint)
+        self.assertIn("当前供应商的 API Key", hint)
         self.assertNotIn("PRIVATE", message + hint)
         self.assertNotIn("/retry", hint)
+
+    def test_stream_errors_do_not_display_vendor_details(self):
+        for error in (
+            IncompleteStreamError("PRIVATE", details={"body": "PRIVATE"}),
+            ResponseFailedError("PRIVATE", details={"body": "PRIVATE"}),
+        ):
+            message, hint = explain_error(error, can_retry=True)
+            self.assertNotIn("PRIVATE", message + hint)
+            self.assertIn("/retry", hint)
 
     def test_step_limit_does_not_offer_a_futile_retry(self):
         _, hint = explain_error(

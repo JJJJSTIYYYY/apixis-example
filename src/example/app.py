@@ -115,19 +115,20 @@ async def render_chunk(ui: AgentUI, chunk) -> None:
         )
 
 
-async def chat_loop() -> None:
+async def chat_loop(*, provider: str = "deepseek", model: str | None = None) -> None:
     """Run the interactive chat loop; only completed turns enter history."""
-    llm._require_api_key()
+    llm.get_provider(provider)
+    if model is not None:
+        llm.get_model(provider, model)
     ui = AgentUI()
-    # On first run, ask who this is and remember the display name.
+    # Reuse the active name until the user explicitly logs out.
     username = settings.get_username()
     if username is None:
-        username = ui.ask_username()
         try:
-            settings.set_username(username)
-        except OSError as exc:
-            ui.error(f"无法写入 {settings.SETTINGS_FILE}: {exc}")
-            console.print("[dim]本次会话仍会使用该用户名[/]")
+            username = commands.handle_login(ui)
+        except EOFError, KeyboardInterrupt:
+            ui.farewell()
+            return
     ui.username = username
 
     async def approve(call: dict) -> bool:
@@ -139,8 +140,8 @@ async def chat_loop() -> None:
         )
         return await decision
 
-    runtime = AgentRuntime(approve)
-    ui.banner(llm.DEEPSEEK_MODEL)
+    runtime = AgentRuntime(approve, provider=provider, model=model)
+    ui.banner(llm.model_label(runtime.provider, runtime.model))
     # Start a new conversation by default; /history resumes a saved one.
     current_conversation: history.Conversation | None = None
     messages: list[dict] = [{"role": "system", "content": build_system_prompt()}]
@@ -163,6 +164,34 @@ async def chat_loop() -> None:
                 break
             if user_input == "/help":
                 ui.help()
+                continue
+            if user_input.split()[0] in ("/provider", "/model"):
+                commands.handle_model_selection(ui, runtime, user_input)
+                continue
+            if user_input == "/logout":
+                try:
+                    settings.clear_username()
+                except OSError as exc:
+                    ui.error(
+                        f"无法保存退出状态：{exc}",
+                        hint="本次仍会返回用户名界面；下次启动可能自动使用原用户名。",
+                    )
+                current_conversation = None
+                messages = [{"role": "system", "content": build_system_prompt()}]
+                pending_input = None
+                runtime.clear_attempt()
+                runtime.events.counts.clear()
+                ui.clear_output()
+                ui.set_conversation(None)
+                ui.username = "你"
+                ui.notice("已退出当前用户。")
+                try:
+                    username = commands.handle_login(ui)
+                except EOFError, KeyboardInterrupt:
+                    ui.farewell()
+                    break
+                ui.username = username
+                ui.banner(llm.model_label(runtime.provider, runtime.model))
                 continue
             if user_input == "/output":
                 ui.output()
@@ -287,15 +316,19 @@ async def chat_loop() -> None:
 
 
 async def run_prompt(
-    prompt: str, *, approve_tools: bool = False, max_steps: int = 32
+    prompt: str,
+    *,
+    approve_tools: bool = False,
+    max_steps: int = 32,
+    provider: str = "deepseek",
+    model: str | None = None,
 ) -> None:
     """Run one prompt without changing username settings or conversation history."""
-    llm._require_api_key()
 
     async def approve(call: dict) -> bool:
         return approve_tools
 
-    runtime = AgentRuntime(approve, max_steps=max_steps)
+    runtime = AgentRuntime(approve, max_steps=max_steps, provider=provider, model=model)
     stream_error = None
     try:
         async with aclosing(

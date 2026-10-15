@@ -8,7 +8,6 @@ import sys
 async def _run(args: argparse.Namespace) -> None:
     from apixis import start_core
 
-    from .core import llm
     from .core.runtime import shutdown_core
 
     await start_core()
@@ -27,14 +26,17 @@ async def _run(args: argparse.Namespace) -> None:
             from .app import run_prompt
 
             await run_prompt(
-                args.prompt, approve_tools=args.approve_tools, max_steps=args.max_steps
+                args.prompt,
+                approve_tools=args.approve_tools,
+                max_steps=args.max_steps,
+                provider=args.provider,
+                model=args.model,
             )
         else:
             from .app import chat_loop
 
-            await chat_loop()
+            await chat_loop(provider=args.provider, model=args.model)
     finally:
-        await llm.close_client()
         await shutdown_core()
 
 
@@ -45,6 +47,10 @@ def main() -> None:
     )
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--prompt", help="单次提问，不保存对话历史")
+    parser.add_argument(
+        "--provider", default="deepseek", help="初始供应商（默认 deepseek）"
+    )
+    parser.add_argument("--model", help="初始模型 ID；交互中可用 /model 切换")
     modes.add_argument(
         "--check",
         action="store_true",

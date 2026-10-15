@@ -55,7 +55,38 @@ def get_username() -> str | None:
 
 
 def set_username(name: str) -> None:
-    """Persist the display name, preserving any other stored settings."""
+    """Remember the active display name and retain previously recorded users."""
     settings = load_settings()
+    names = _usernames(settings)
+    if name not in names:
+        names.append(name)
+    settings["usernames"] = names
     settings["username"] = name
+    save_settings(settings)
+
+
+def _usernames(settings: dict[str, Any]) -> list[str]:
+    names = settings.get("usernames", [])
+    if not isinstance(names, list):
+        names = []
+    # Include the active name from settings written before the user list existed.
+    return sorted(
+        {
+            name.strip()
+            for name in [*names, settings.get("username")]
+            if isinstance(name, str) and name.strip()
+        }
+    )
+
+
+def list_usernames() -> list[str]:
+    """Return recorded display names, including users with no conversations."""
+    return _usernames(load_settings())
+
+
+def clear_username() -> None:
+    """Forget the active login while preserving all recorded display names."""
+    settings = load_settings()
+    settings["usernames"] = _usernames(settings)
+    settings.pop("username", None)
     save_settings(settings)

@@ -1,6 +1,6 @@
 # Example · Apixis Agent
 
-一个可以日常使用的终端智能助手，同时展示 Apixis 的图调度、事件和恢复能力。支持 DeepSeek 流式对话、逐次审批终端命令，以及自动保存和继续历史对话。项目、Python 包和命令均为 `example`。
+一个终端智能助手演示项目，展示 Apixis 的图调度、事件和恢复能力，以及 my-llm-py 的多供应商模型调用。支持 DeepSeek、Kimi、OpenAI 等供应商的流式对话、逐次审批终端命令，以及自动保存和继续历史对话。项目、Python 包和命令均为 `example`。
 
 ## 启动
 
@@ -14,15 +14,43 @@ export DEEPSEEK_API_KEY
 uv run example
 ```
 
-也可自行在当前进程环境中设置 `DEEPSEEK_API_KEY`。不要把真实 Key 放入源码或配置文件。
+默认使用 DeepSeek / `deepseek-flash`。进入对话后用命令切换供应商和模型：
 
-| 环境变量 | 默认值 | 作用 |
+```text
+/provider                         查看当前供应商与可用供应商
+/provider kimi                    切换到 Kimi
+/model kimi-k2.7-code             切换到预设模型
+/provider openai gpt-6.1-sol        同时选择供应商和模型
+/model                            查看当前模型与预设模型
+```
+
+预设已按 2026-10-16 的官方文档核查，包含六个供应商的 18 个模型，详见 [预设及来源](docs/model-presets.md)。也可输入账户可用的其他模型 ID。切换后立即使用新选择，
+完整保留当前对话、工具结果、最近工具输出和失败快照；`/retry` 使用新选择恢复旧快照。
+跨供应商、跨 API 的消息转换交给 my-llm-py，转换失败时显示错误并保留状态。
+
+也可用启动参数指定初始选择，适用于交互和单次模式：
+
+```bash
+uv run example --provider kimi --model kimi-k3
+uv run example --provider openai --model gpt-6.1-sol --prompt '你好'
+```
+
+API Key 从环境变量读取，选择供应商和模型不需要凭证；实际发起模型请求时才检查。
+
+| 供应商 | API / 协议 | 凭证环境变量 |
 | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | 无 | API 凭证，仅从进程环境读取 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容 API 地址 |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名 |
-| `DEEPSEEK_MAX_TOKENS` | 不额外设置 | 每次请求的输出 token 上限，必须为正整数 |
-| `EXAMPLE_HOME` | `~/.example` | 设置和 SQLite 历史所在目录 |
+| `deepseek` | OpenAI Chat Completions | `DEEPSEEK_API_KEY` |
+| `kimi` | OpenAI Chat Completions | `KIMI_API_KEY` 或 `MOONSHOT_API_KEY` |
+| `openai` | OpenAI Responses | `OPENAI_API_KEY` |
+| `anthropic` | Anthropic 原生 | `ANTHROPIC_API_KEY` |
+| `gemini` | Gemini 原生 | `GEMINI_API_KEY` 或 `GOOGLE_API_KEY` |
+| `ollama` | Ollama 原生 | 无需凭证 |
+
+`LLM_API_KEY` 可作为通用凭证；优先使用当前供应商专属的凭证变量。
+`EXAMPLE_HOME` 仍控制设置和历史保存目录（默认 `~/.example`）。
+模型调用的配置不再读取 `LLM_PROVIDER`、`LLM_MODEL`、API 地址或 token 上限等环境变量。
+地址、API 类型、输出上限和能力差异直接在 `core/providers.py` 使用库原生的
+`ProviderProfile`、`ModelProfile` 声明，见 [my-llm-py 接入说明](docs/my-llm-coverage.md)。
 
 项目目录里的 `config.yaml` 控制 Apixis 日志。Apixis 从**运行命令时的工作目录**加载该文件。可添加 `PIPELINE.event_loop_backpressure` 和 `PIPELINE.event_pipe_max_len` 调整容量；Apixis 1.1.0 的背压下限为 128。
 
@@ -30,17 +58,23 @@ uv run example
 
 首次启动填写显示名称，之后直接输入问题。例如：“帮我解释这段报错”或“查看当前目录，说明项目结构”。回复完成后会自动保存；输入 `/history` 可以选择已有对话继续聊天。
 
+输入 `/logout` 可退出当前用户并回到用户名输入界面，已保存的历史会保留。在用户名输入界面输入 `/list-user` 可列出已记录的用户（包括已有历史中的用户），然后输入其中一个用户名或新用户名。切换用户后从新对话开始，可用 `/history` 恢复该用户的历史。
+
 需要执行工具时，界面会先展示完整命令和工作目录，再逐个请求审批。回车或 `y` 批准，Esc 或 `n` 拒绝。命令守卫会直接拒绝匹配到的危险命令。执行结果按实际退出码区分成功和失败；拒绝会显示“工具已跳过”。
 
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 显示全部命令及工具审批操作说明 |
+| `/provider [供应商] [模型ID]` | 查看或切换供应商，保留对话和重试状态 |
+| `/model [模型ID]` | 查看或切换当前供应商的模型，保留对话和重试状态 |
 | `/history` | 选择并继续当前用户名的历史对话 |
 | `/new` | 开始新对话，清除当前重试记录 |
 | `/rename`、`/delete` | 重命名或删除当前对话 |
 | `/output` | 查看最近一次工具的完整输出 |
 | `/transcript` | 查看当前对话的完整记录 |
 | `/retry` | 从最近一次失败运行的最新快照恢复 |
+| `/logout` | 退出当前用户，清空当前对话和重试状态，重新询问用户名 |
+| `/list-user` | 仅在用户名输入界面可用，列出已记录的用户 |
 | `quit`、`exit`、`q`、Ctrl-C | 退出 |
 
 长工具输出先显示摘要，输入 `/output` 查看全文。打开历史时先预览最近 3 轮，输入 `/transcript` 查看完整对话；模型仍会使用完整历史。在终端中长记录使用分页器，通常按 `q` 返回；输出重定向时直接打印全文。历史选择输错序号会提示重新输入，回车返回当前对话。
@@ -67,6 +101,7 @@ uv run example
   插件通过 `GraphContext.stream_writer()` 发送 `type="error"` 的消息（包含 `message` 和 `hint`），再用 `event.accept()` 中止调度；调用方直接消费流，无需读取 state 中的额外标记。
 - 快照只属于当前进程中的编译图，**不支持退出后恢复**。SQLite 保存的是完成的对话，不是图运行快照。
 - 切换、删除或新建对话后，旧失败运行不再可重试。
+- `/provider`、`/model` 保留对话和旧失败快照；切换后 `/retry` 会使用当前选择的模型继续。
 
 ### 单次运行与本地检查
 
@@ -76,7 +111,7 @@ uv run example --check
 
 # One turn, streamed to stdout, without writing settings or conversation history.
 # Tools are rejected by default in this mode.
-DEEPSEEK_MAX_TOKENS=24 uv run example --prompt '不要调用工具。只回复 OK。'
+uv run example --prompt '不要调用工具。只回复 OK。'
 
 # Explicitly approve guarded tools for this one prompt.
 uv run example --prompt '执行 printf hello，然后说明结果' --approve-tools
@@ -85,7 +120,9 @@ uv run example --prompt '执行 printf hello，然后说明结果' --approve-too
 uv run example --prompt '你好' --max-steps 16
 ```
 
-单次模式也经过输入过滤和命令守卫。超小的 token 上限主要用于纯文本冒烟测试，工具调用可能需要更大的输出预算。
+单次模式也经过输入过滤和命令守卫。DeepSeek/Kimi 的输出预算直接配置在 `ModelProfile.extra_body`：DeepSeek 和 Kimi K2.x 使用 `{"max_tokens": 4096}`，Kimi K3 使用 `{"max_completion_tokens": 4096}`；其他协议使用库的 `ModelProfile.max_tokens`。未显式配置时沿用现有默认值。
+
+完成原因使用 MyLLM 0.1.4 的统一 `finish_reason`：`stop`、`length`、`tool_calls`、`content_filter`；特殊原因由库保留。应用遇到 `length` 时保留失败快照供 `/retry`，截断回复不写入历史。
 
 ## 结构
 
@@ -99,7 +136,8 @@ src/example/
     agent.py           prepare → workspace → agent ↔ tools
     workspace.py       并发子图：directory + environment → summary
     events.py          工具请求/回复、自定义运行事件、后台计数
-    llm.py             SSE 拼接、HTTP 客户端与输出预算
+    providers.py       my-llm-py 的供应商 Profile 预设
+    llm.py             Profile 配置与 MessageChunk 流消费
     tools.py           工具注册与 shell 执行
     history.py         SQLite 历史
     settings.py        用户名与保存路径
@@ -117,4 +155,4 @@ src/example/
 uv run python -m unittest discover -s tests -v
 ```
 
-测试不需要 API Key，也不会访问付费接口。覆盖真实 Apixis 图与事件流程、审批顺序、异常、恢复、中止、流关闭、历史去重、SSE，以及窄窗口、长输出和历史交互；另在独立进程中验证背压 128、队列 8 下的 160 路并发。
+测试不需要 API Key，也不会访问付费接口。覆盖真实 Apixis 图与事件流程、审批顺序、异常、恢复、中止、my-llm-py 与官方 SDK 的模拟传输、原生消息历史保存，以及窄窗口、长输出和历史交互；另在独立进程中验证背压 128、队列 8 下的 160 路并发。

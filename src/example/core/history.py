@@ -36,8 +36,8 @@ def _connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(_db_path())
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
-    _init_schema(conn)
     try:
+        _init_schema(conn)
         yield conn
         conn.commit()
     finally:
@@ -66,12 +66,16 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             content         TEXT,
             tool_calls      TEXT,
             tool_call_id    TEXT,
+            message_json    TEXT,
             created_at      TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_msg_conv
             ON messages(conversation_id);
         """
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)")}
+    if "message_json" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN message_json TEXT")
 
 
 def _now() -> str:
@@ -94,6 +98,15 @@ class Conversation:
 
 
 # ── conversation CRUD ─────────────────────────────────────────────────
+
+
+def list_usernames() -> list[str]:
+    """Return distinct users recorded in existing conversation history."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT username FROM conversations ORDER BY username"
+        ).fetchall()
+    return [row["username"] for row in rows]
 
 
 def list_conversations(username: str, limit: int = 50) -> list[Conversation]:
@@ -183,9 +196,9 @@ def touch_conversation(conversation_id: int) -> None:
 def append_messages(conversation_id: int, messages: list[dict]) -> None:
     """Persist a batch of messages and bump the conversation's updated_at.
 
-    ``tool_calls`` is serialised as JSON so the model sees the exact structure
-    on resume; content may be None (assistant messages carrying only tool
-    calls), so the column is nullable.
+    Save the complete public my-llm Message, including reasoning, Responses
+    output items and native signatures. Legacy columns remain readable for
+    databases created before the full-message format was introduced.
     """
     if not messages:
         return
@@ -194,19 +207,21 @@ def append_messages(conversation_id: int, messages: list[dict]) -> None:
         conn.executemany(
             """
             INSERT INTO messages
-                (conversation_id, role, content, tool_calls, tool_call_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (conversation_id, role, content, tool_calls, tool_call_id, created_at,
+                 message_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     conversation_id,
                     m.get("role"),
-                    m.get("content"),
+                    m.get("content") if isinstance(m.get("content"), str) else None,
                     json.dumps(m.get("tool_calls"), ensure_ascii=False)
                     if m.get("tool_calls")
                     else None,
                     m.get("tool_call_id"),
                     now,
+                    json.dumps(m, ensure_ascii=False),
                 )
                 for m in messages
             ],
@@ -221,13 +236,16 @@ def load_messages(conversation_id: int) -> list[dict]:
     """Reconstruct the message list for a conversation, in order."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT role, content, tool_calls, tool_call_id "
+            "SELECT role, content, tool_calls, tool_call_id, message_json "
             "FROM messages WHERE conversation_id = ? ORDER BY id",
             (conversation_id,),
         ).fetchall()
 
     out: list[dict[str, Any]] = []
     for r in rows:
+        if r["message_json"] is not None:
+            out.append(json.loads(r["message_json"]))
+            continue
         msg: dict[str, Any] = {"role": r["role"]}
         if r["content"] is not None:
             msg["content"] = r["content"]

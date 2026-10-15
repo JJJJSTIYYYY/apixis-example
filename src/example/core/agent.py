@@ -14,7 +14,7 @@ from apixis import (
     interrupt,
 )
 
-from .llm import stream_deepseek
+from .llm import stream_reply
 from .tools import get_tools_schema
 
 
@@ -27,7 +27,10 @@ class AgentState(TypedDict):
 
 
 def build_agent(
-    workspace_graph: NodeGraph, execute: Callable[[dict], Awaitable[str]]
+    workspace_graph: NodeGraph,
+    execute: Callable[[dict], Awaitable[str]],
+    *,
+    generate: Callable[..., Awaitable[dict]] | None = None,
 ) -> GraphManager:
     """Inject runtime services through closures instead of copying them in state."""
 
@@ -50,7 +53,7 @@ def build_agent(
                 state["workspace_notes"]
             )
             messages.insert(1, {"role": "system", "content": note})
-        response = await stream_deepseek(
+        response = await (generate or stream_reply)(
             messages,
             get_tools_schema(),
             on_text=lambda text: writer({"type": "content", "text": text}),

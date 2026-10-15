@@ -15,7 +15,7 @@ from ..plugins import (
     register_input_filter_plugin,
     unregister_input_filter_plugin,
 )
-from .agent import build_agent
+from . import agent, llm
 from .events import AgentEvents
 from .workspace import build_workspace_graph
 
@@ -24,7 +24,12 @@ class AgentRuntime:
     """Own only session resources; the CLI owns the process-global event core."""
 
     def __init__(
-        self, approve: Callable[[dict], Awaitable[bool]], *, max_steps: int = 32
+        self,
+        approve: Callable[[dict], Awaitable[bool]],
+        *,
+        max_steps: int = 32,
+        provider: str = "deepseek",
+        model: str | None = None,
     ) -> None:
         if (
             isinstance(max_steps, bool)
@@ -32,9 +37,12 @@ class AgentRuntime:
             or max_steps <= 0
         ):
             raise ValueError("max_steps must be a positive integer")
+        self.provider = provider
+        self.model: str | None = None
+        self.select_model(provider, model)
         self.workspace_graph = build_workspace_graph()
-        self.graph = build_agent(
-            self.workspace_graph, self._execute_tool
+        self.graph = agent.build_agent(
+            self.workspace_graph, self._execute_tool, generate=self._generate
         ).compile_graph("prepare")
         self.graph.set_max_steps(max_steps)
         self.events = AgentEvents(self.graph.namespace)
@@ -62,6 +70,19 @@ class AgentRuntime:
         except BaseException:
             self.close()
             raise
+
+    def select_model(self, provider: str, model: str | None = None) -> None:
+        """Change the next LLM call, including retries, without changing graph state."""
+        preset = llm.get_provider(provider)
+        if model is not None or preset.list_models():
+            model = llm.get_model(provider, model).model
+        self.provider = provider
+        self.model = model
+
+    async def _generate(self, messages, tools, on_text) -> dict:
+        return await agent.stream_reply(
+            messages, tools, on_text, provider=self.provider, model=self.model
+        )
 
     async def _execute_tool(self, call: dict) -> str:
         return await self.events.execute(call)

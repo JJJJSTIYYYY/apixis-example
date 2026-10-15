@@ -54,3 +54,107 @@
 - 新增验证：回复在请求发布返回之前已到达时仍可获取；请求发布失败时等待订阅被移除。
 - 原有并发回复关联、worker 故障回传，以及背压 128、队列 8 下的 160 路并发均通过。
 - `git diff --check` 通过。
+
+## my-llm-py 多供应商接入验证
+
+验证日期：2026-10-16。环境：macOS、Python 3.14.0、Apixis 1.1.1、my-llm-py 0.1.3。
+
+- `.venv/bin/python -m unittest discover -s tests -v`：60 项全部通过，无真实供应商请求。
+- 通过真实官方 SDK 和 `httpx.MockTransport` 检查 DeepSeek/Kimi Chat 请求、OpenAI
+  Responses 工具转换及原生输出回放，以及 Anthropic/Gemini/Ollama 原生文本和工具请求。
+- 检查输出预算字段、供应商凭证隔离、认证错误、流中断、显示异常和取消时的流关闭。
+- SQLite 保存完整 Message，覆盖推理、原生输出和内容块的往返；原有数据库自动迁移，
+  旧消息和新消息可以同时读取。
+- 六种供应商的 CLI 启动横幅、用户名输入、`/list-user` 和 `/logout` 均通过离线冒烟检查；
+  未设置凭证时提示对应环境变量。
+- `python -m example --check` 通过，仍无需模型凭证。
+- Ruff 代码及格式检查、`git diff --check` 通过。
+
+这些验证未覆盖真实账户权限和线上模型可用性，未发起付费 API 调用。
+
+## 命令切换与跨供应商兼容性验证
+
+验证日期：2026-10-16。
+
+- `/provider [供应商] [模型ID]` 和 `/model [模型ID]` 负责交互选择，`--provider`、
+  `--model` 指定初始选择。模型配置仅从代码中的 Profile 获取，环境变量只提供凭证。
+- `.venv/bin/python -m unittest discover -s tests -v`：65 项全部通过。
+- 真实应用循环覆盖：完成一轮对话、执行工具后失败、切换模型、切换供应商、再 `/retry`。
+  编译图和对话保持不变，旧快照与原生输出保留，已完成工具只执行一次。
+- 官方 SDK 配合模拟传输覆盖 Kimi Chat → OpenAI Responses → DeepSeek Chat，验证
+  工具调用 ID、工具结果及可见推理的回传和转换。
+- 非法选择不会改变已有选择或失败快照；没有凭证时仍可启动并切换，发起请求时提示
+  当前供应商的凭证变量。CLI 的初始选择参数和 `--check` 均通过。
+- Ruff 代码与格式检查、`git diff --check` 通过；未发起真实供应商或付费请求。
+
+## 官方模型预设核查
+
+核查日期：2026-10-16；[预设与官方来源](model-presets.md)。
+
+- 实际查阅六家官方模型文档，配置 18 个预设，默认 DeepSeek 改为 `deepseek-flash`。
+- `.venv/bin/python -m unittest discover -s tests -v`：69 项全部通过。
+- 新增实际 SDK 模拟请求检查：Kimi K3 仅发送原生 effort、DeepSeek 强度映射、
+  当前 OpenAI 模型使用 Responses 函数工具。原生协议测试使用实际默认模型的 Profile，
+  验证 Claude adaptive thinking、Gemini thinking level 和 Ollama 布尔 think 参数。
+- 无凭证 CLI 检查通过：六家默认模型、`/model` 预设列表、命令切换和 `/retry` 提示。
+- Ruff 代码和格式检查、`git diff --check` 通过，未发起付费请求或下载本地模型。
+
+## 输出预算改为直接配置
+
+- DeepSeek/Kimi 直接使用 `ModelProfile.extra_body.max_tokens`；删除了应用中按供应商
+  将 `ModelProfile.max_tokens` 转成原生字段的分支，未新增默认输出限制。
+- SDK 模拟传输验证直接配置产生原生 `max_tokens`，不产生 `max_completion_tokens`，
+  原始 ModelProfile 及其 extra_body 保持不变。
+- 移除依赖旧转换行为的校验测试后，68 项测试全部通过；Ruff 和 `git diff --check` 通过。
+
+## 真实端到端验证
+
+2026-10-16 使用用户授权的 DeepSeek、Moonshot 国内接口凭证进行验证，
+[完整记录](live-e2e-2026-10-16.md)。两次模型列表查询与三次推理请求均返回 HTTP 200。
+
+- 实际模型：`deepseek-flash`、`kimi-k2.6`；每次输出上限 128 tokens，SDK 重试为 0。
+- 真实 shell 工具执行一次；在本地注入失败后，切换供应商并从原快照成功恢复。
+- 切回 DeepSeek 后继续原对话，SQLite 单段历史保存及 `/history` 恢复均通过。
+- 供应商 usage 合计输入 1,457、输出 62 tokens，未追加推理请求。
+- 测试使用临时 Profile 和临时历史目录，凭证未持久化。
+
+## 思考模式与 Kimi K3 真实续测
+
+2026-10-16，[完整请求、消耗及限制记录](live-thinking-e2e-2026-10-16.md)。
+
+- 本轮尝试发送 10 次推理请求；9 次取得 HTTP 200 和完整 usage，已知合计 5,911 tokens。
+  另 1 次没有响应状态或 usage，未计入合计，未继续付费追查。
+- 首组因测试脚本要求每条回复都有可见推理而误判；修正后补测 4 次，整组通过。
+- K3 自身思考工具历史回放成功；DeepSeek 思考工具历史切换 K3 并从失败快照重试成功。
+- 真实 `finish_reason=length` 后切换 K3 重试成功，没有重复工具、用户消息或保存截断回复。
+- 修正截断错误提示，明确可切换模型重试；文档区分 K3 的原生 `max_completion_tokens`
+  与 DeepSeek/Kimi K2.x 的 `max_tokens`，两者均直接放入 ModelProfile.extra_body。
+- 新增 K3 原生预算字段和截断重试提示的离线验证；70 项单元测试全部通过。
+
+## 非思考 → 思考 → 供应商/模型切换
+
+2026-10-16，[完整记录与兼容性限制](live-mode-switch-e2e-2026-10-16.md)。
+
+- 单一对话、runtime 和编译图；7 次真实推理请求，6 次 HTTP 200、1 次 HTTP 400。
+  6 个有 usage 的响应合计 4,013 tokens，400 无 usage，不估算计费。
+- 完成非思考回复后开启思考，工具调用后切换 DeepSeek Flash → V4 Pro 并 `/retry`，
+  再切换 Kimi K3 继续原对话，均通过。
+- 非思考工具轮尚未完成时直接开启 DeepSeek 思考模式，400 要求回传 reasoning_content。
+  原消息没有该内容，当前 MyLLM 未自动兼容；原快照切换 Kimi K3 后成功恢复。
+- 两个真实 shell 工具各执行一次；单段 SQLite 历史 12 条，四条用户输入没有重复。
+- 未增加协议兼容补丁。新增实际 SDK/模拟传输的失败恢复回归；71 项测试通过，
+  Ruff 代码及格式检查、`git diff --check` 通过。
+
+## MyLLM 0.1.4 对齐与失败场景复测
+
+2026-10-16，[完整复测记录](live-retest-0.1.4-2026-10-16.md)。安装版本、项目依赖和
+锁文件均已是 0.1.4；依照本地 reference 文档更新完成原因的消费方式。
+
+- 应用只判断统一 `finish_reason == "length"`，删除原生 `max_tokens` 别名分支。
+- 原生 SDK 模拟传输验证正常结束、长度截断、工具调用的统一原因，以及特殊原因保留；
+  长度截断仍抛 StreamError，partial_message 保留统一完成原因。
+- 原先失败的非思考工具轮开启 DeepSeek 思考模式后 `/retry`，真实请求返回 HTTP 200。
+  MyLLM 自动在请求中补空 reasoning_content，应用历史未改写，工具没有重复执行。
+- 真实长度截断后切换 Kimi K3 并 `/retry` 仍通过；单段 SQLite 六条消息，没有保存截断回复。
+- 共 4 次真实请求，均 HTTP 200；原生 usage 合计输入 2,243、输出 98，共 2,341 tokens。
+- 73 项单元测试全部通过；Ruff 代码/格式和 `git diff --check` 通过。

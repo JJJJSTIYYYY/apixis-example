@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -133,11 +134,13 @@ class AgentUI:
         body.append(f"模型：{plain_text(model)}\n", style="dim")
         body.append("直接输入问题开始对话。\n")
         body.append("/help 帮助  ·  /history 历史  ·  /new 新对话\n", style="dim")
-        body.append("quit 退出  ·  Ctrl-C 退出", style="dim")
+        body.append("/provider 切换供应商  ·  /model 切换模型\n", style="dim")
+        body.append("/logout 切换用户  ·  quit 退出\n", style="dim")
+        body.append("Ctrl-C 退出", style="dim")
         console.print(
             Panel(
                 body,
-                title="[bold]Example · 智能助手[/]",
+                title="[bold]Apixis Example · 智能助手[/]",
                 border_style="cyan",
                 padding=(0, 1),
             )
@@ -150,6 +153,8 @@ class AgentUI:
                 "对话与历史",
                 (
                     ("/help", "显示帮助"),
+                    ("/provider [供应商] [模型ID]", "查看或切换供应商，保留对话和重试"),
+                    ("/model [模型ID]", "查看或切换模型，保留对话和重试"),
                     ("/history", "选择历史对话继续聊天"),
                     ("/new", "开始新对话"),
                     ("/rename", "重命名当前对话"),
@@ -157,6 +162,8 @@ class AgentUI:
                     ("/transcript", "查看当前对话的完整记录"),
                     ("/output", "查看最近一次工具的完整输出"),
                     ("/retry", "失败后继续本轮，保留已提交的工具结果"),
+                    ("/logout", "退出当前用户，重新输入用户名"),
+                    ("/list-user", "在用户名输入界面列出已记录的用户"),
                     ("quit / exit / q", "退出程序"),
                 ),
             ),
@@ -224,21 +231,44 @@ class AgentUI:
             )
         )
 
-    def ask_username(self) -> str:
+    def ask_username(self, *, on_list_users: Callable[[], None]) -> str:
         """Ask for a display name without leading with an internal storage path."""
         console.print(
             Panel(
-                Text("你希望助手如何称呼你？\n显示名称会记住，下次无需重复填写。"),
-                title="欢迎使用 Example",
+                Text(
+                    "你希望助手如何称呼你？\n显示名称会记住，下次无需重复填写。\n"
+                    "输入 /list-user 查看已记录的用户。"
+                ),
+                title="欢迎使用 Apixis Example",
                 border_style="cyan",
                 padding=(0, 1),
             )
         )
         while True:
             name = input(readline_prompt("[bold green]你的名字[/] [dim]›[/] ")).strip()
+            if name == "/list-user":
+                on_list_users()
+                continue
+            if name.startswith("/"):
+                self.error("未知命令；输入 /list-user 查看已记录的用户，或输入用户名。")
+                continue
             if name:
                 return name
             self.notice("请输入一个显示名称。", style="yellow")
+
+    def list_users(self, names: list[str]) -> None:
+        """Display recorded names literally, then let the user type a name."""
+        if not names:
+            self.notice("还没有已记录的用户，请输入一个用户名。")
+            return
+        table = Table(
+            title="已记录的用户", box=box.SIMPLE_HEAD, show_edge=False, min_width=16
+        )
+        table.add_column("用户名", style="green")
+        for name in names:
+            table.add_row(Text(plain_text(name)))
+        console.print(table)
+        self.notice("输入上面的用户名继续，或输入新用户名。")
 
     def thinking(self, message: str = "正在思考…") -> None:
         """Show a spinner until text, an approval, or an error replaces it."""

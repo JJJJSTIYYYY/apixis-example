@@ -36,7 +36,7 @@
 | 未直接使用的接口类别 | 原因 / 可扩展方向 |
 | --- | --- |
 | `ParallelNode` | 当前子图已用并发节点入口展示相同的分支与合流能力；可以在需要把分支封装为一个命名节点时采用 |
-| `KeepRef` | HTTP 客户端、事件服务和子图通过模块或闭包持有，运行资源不会进入 state，也不会随快照深拷贝；无需引入共享可变 state |
+| `KeepRef` | 模型配置、事件服务和子图通过模块或闭包持有，运行资源不会进入 state，也不会随快照深拷贝；无需引入共享可变 state |
 | `NodeGraph.apply_command()`、`take_a_snapshot()` 手动调用 | 命令提交与节点前快照由引擎自动执行，业务不重复执行 |
 | `Block.accept()`、`fail()`、`cancel()` | 示例使用即时人工决策，没有把审批交给外部系统延迟完成的需求 |
 | handler 动态替换和额外生命周期回调 | 示例保留明确的注册/注销关系；worker 的错误回传使用 `on_error`，不人为制造其他回调场景 |
@@ -52,7 +52,6 @@ import asyncio
 from contextlib import aclosing
 from apixis import start_core
 from example.core.runtime import AgentRuntime, shutdown_core
-from example.core.llm import close_client
 
 async def main():
     await start_core()
@@ -72,10 +71,13 @@ async def main():
         # Another task can await runtime.abort() while this session is running.
     finally:
         runtime.close()
-        await close_client()
         await shutdown_core()
 
 asyncio.run(main())
 ```
 
 一个 `AgentRuntime` 的 `last_context` 表示该会话最近的尝试。需要分别跟踪多段会话时创建多个 runtime；它们共用事件核心，但 handler 名称与事件命名空间相互隔离。`abort()` 按 Apixis 契约立即终止调用等待，已经开始的节点工作可能继续，不等同于撤销已发生的 shell 副作用。
+
+`runtime.select_model("kimi", "your-model-id")` 可切换后续 LLM 调用，包括从失败快照
+恢复后的调用。该操作保留当前图、`last_context` 和快照，不改写已有消息或工具结果，
+用于测试 my-llm-py 的跨供应商历史兼容性。交互界面的 `/provider`、`/model` 使用此接口。

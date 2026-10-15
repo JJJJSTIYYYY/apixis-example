@@ -1,6 +1,11 @@
-"""Translate transport and workflow failures into useful next steps."""
+"""Translate public my-llm-py and SDK failures into useful next steps."""
 
+import anthropic
 import httpx
+import openai
+from google.genai.errors import APIError as GeminiAPIError
+from my_llm import ConfigurationError, IncompleteStreamError, StreamError
+from ollama import ResponseError as OllamaResponseError
 
 from .terminal import plain_text
 
@@ -12,12 +17,20 @@ def explain_error(error: Exception, *, can_retry: bool = False) -> tuple[str, st
         if can_retry
         else "请稍后重新运行。"
     )
+    status = None
     if isinstance(error, httpx.HTTPStatusError):
         status = error.response.status_code
+    elif isinstance(
+        error, (openai.APIStatusError, anthropic.APIStatusError, OllamaResponseError)
+    ):
+        status = error.status_code
+    elif isinstance(error, GeminiAPIError):
+        status = error.code
+    if status is not None:
         if status in (401, 403):
             return (
                 "API 凭证无效或没有访问权限。",
-                "请检查 DEEPSEEK_API_KEY 与模型权限后重新启动。",
+                "请检查当前供应商的 API Key 与模型权限后重新启动。",
             )
         if status == 402:
             return "模型服务余额不足。", "请检查服务账户余额后重新启动。"
@@ -29,25 +42,49 @@ def explain_error(error: Exception, *, can_retry: bool = False) -> tuple[str, st
             f"模型服务拒绝了请求（HTTP {status}）。",
             "请检查模型名、API 地址与请求配置。",
         )
-    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
+    if isinstance(
+        error,
+        (
+            httpx.TimeoutException,
+            TimeoutError,
+            openai.APITimeoutError,
+            anthropic.APITimeoutError,
+        ),
+    ):
         return "等待回复超时，本轮没有保存到历史。", "请检查网络或稍后再试。" + retry
-    if isinstance(error, (httpx.NetworkError, httpx.ProxyError)):
-        return "无法连接模型服务。", "请检查网络、代理与 DEEPSEEK_BASE_URL。" + retry
-    detail = plain_text(error)
-    if "DEEPSEEK_API_KEY environment variable is not set" in detail:
+    if isinstance(
+        error,
+        (
+            httpx.NetworkError,
+            httpx.ProxyError,
+            openai.APIConnectionError,
+            anthropic.APIConnectionError,
+        ),
+    ):
         return (
-            "尚未设置 API Key。",
-            "请设置 DEEPSEEK_API_KEY 环境变量后重新启动；uv run example --check 可用于本地检查。",
+            "无法连接模型服务。",
+            "请检查网络、代理与当前 ProviderProfile.base_url。" + retry,
         )
+    if isinstance(error, ConfigurationError):
+        return "模型配置无效。", plain_text(error)
+    if isinstance(error, StreamError):
+        if "长度上限" in str(error):
+            return (
+                "回复达到输出长度上限。",
+                "请提高当前模型 Profile 的输出预算，或切换到预算充足的模型。" + retry,
+            )
+        if isinstance(error, IncompleteStreamError):
+            return "回复传输中断，屏幕上的内容可能不完整。", retry
+        return (
+            "模型未能完成回复，本轮没有保存。",
+            "请检查模型服务状态与输出长度设置。" + retry,
+        )
+    detail = plain_text(error)
     if "maximum" in detail and "steps" in detail:
         return (
             "本轮已达到执行步数上限。",
             "请缩小任务范围并重新提问；/retry 不会增加步数额度。",
         )
-    if "token limit" in detail:
-        return "回复达到输出长度上限。", "请提高 DEEPSEEK_MAX_TOKENS 后重新启动。"
-    if "before [DONE]" in detail:
-        return "回复传输中断，屏幕上的内容可能不完整。", retry
     return "操作未完成。", (detail[:240] or "请稍后再试。") + (
         "\n" + retry if can_retry else ""
     )

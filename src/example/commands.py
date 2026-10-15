@@ -3,9 +3,76 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import TYPE_CHECKING
 
-from .core import history
+from my_llm import ConfigurationError
+
+from .core import history, llm, settings
 from .ui import AgentUI
+
+if TYPE_CHECKING:
+    from .core.runtime import AgentRuntime
+
+
+def handle_model_selection(ui: AgentUI, runtime: AgentRuntime, command: str) -> None:
+    """Switch only runtime dependencies; retain messages, tool output and snapshots."""
+    parts = command.split()
+    try:
+        if parts[0] == "/provider":
+            if len(parts) == 1:
+                ui.notice("当前：" + llm.model_label(runtime.provider, runtime.model))
+                ui.notice("可用供应商：" + ", ".join(llm.PROVIDERS))
+                ui.notice("用法：/provider <供应商> [模型ID]")
+                return
+            if len(parts) > 3:
+                raise ConfigurationError("用法：/provider <供应商> [模型ID]")
+            provider = parts[1].lower()
+            model = (
+                parts[2]
+                if len(parts) == 3
+                else (runtime.model if provider == runtime.provider else None)
+            )
+        else:
+            if len(parts) == 1:
+                ui.notice("当前：" + llm.model_label(runtime.provider, runtime.model))
+                models = llm.get_provider(runtime.provider).list_models()
+                ui.notice(
+                    "预设模型：" + ", ".join(model.model for model in models)
+                    if models
+                    else "当前供应商没有预设模型。"
+                )
+                ui.notice("用法：/model <模型ID>；也可输入预设列表之外的模型 ID。")
+                return
+            if len(parts) != 2:
+                raise ConfigurationError("用法：/model <模型ID>")
+            provider, model = runtime.provider, parts[1]
+        runtime.select_model(provider, model)
+    except ConfigurationError as exc:
+        ui.error(str(exc))
+        return
+    ui.notice(
+        "已切换为：" + llm.model_label(runtime.provider, runtime.model), style="green"
+    )
+
+
+def handle_list_users(ui: AgentUI) -> None:
+    try:
+        names = sorted(set(settings.list_usernames()) | set(history.list_usernames()))
+    except OSError, sqlite3.Error:
+        ui.error("暂时无法读取用户列表。", hint="请检查保存目录权限和磁盘空间。")
+        return
+    ui.list_users(names)
+
+
+def handle_login(ui: AgentUI) -> str:
+    """Prompt for a name, allowing user listing without leaving the prompt."""
+    username = ui.ask_username(on_list_users=lambda: handle_list_users(ui))
+    try:
+        settings.set_username(username)
+    except OSError as exc:
+        ui.error(f"无法写入 {settings.SETTINGS_FILE}: {exc}")
+        ui.notice("本次会话仍会使用该用户名")
+    return username
 
 
 def handle_history(ui: AgentUI, username: str) -> tuple[int | None, list[dict] | None]:
