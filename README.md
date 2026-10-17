@@ -1,6 +1,23 @@
+<div align="center">
+
 # Example · Apixis Agent
 
+![Python](https://img.shields.io/badge/Python-3.14+-3776AB?style=flat&logo=python)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/JJJJSTIYYYY/apixis-example/blob/main/LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/tUCQthwK5)
+[![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-639459172-00BFFF?style=flat&logo=tencent-qq)](https://qun.qq.com/universal-share/share?ac=1&authKey=ommoQrT2zhzHU%2FUxv8pfGCJbNifW%2BJyUAFBkNdzkHTPUxdxCnlgxm5aNgGslTmdE&busi_data=eyJncm91cENvZGUiOiI2Mzk0NTkxNzIiLCJ0b2tlbiI6Im9ZZkdNUWZnSVV1Y2REeUhKNnlTbWEwc05Bb093djRzUXdXNE55dklBVnlBQk9XbGNpS0ZXSDlzK3orSW1sQ3YiLCJ1aW4iOiIzMTI5NDI0NTcyIn0%3D&data=OGTchcr80RAQg8Z8_GZTdvBb7kZDeM9B3hHcNqLaAX2ZK_KYq260C4CubblEBT1bK5fP6zgtnCk2D8fIoph1ZQ&svctype=4&tempid=h5_group_info)
+
+**由事件驱动，支持插件、多模型供应商的命令行 Agent**
+
+</div>
+
 一个终端智能助手演示项目，展示 Apixis 的图调度、事件和恢复能力，以及 my-llm-py 的多供应商模型调用。支持 DeepSeek、Kimi、OpenAI 等供应商的流式对话、逐次审批终端命令，以及自动保存和继续历史对话。项目、Python 包和命令均为 `example`。
+
+## 预览
+
+<div align="center">
+  <img src="docs/image/preview.png" alt="preview" width="720">
+</div>
 
 ## 启动
 
