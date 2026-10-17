@@ -5,7 +5,12 @@ import unittest
 from unittest.mock import Mock, patch
 
 import httpx
-from my_llm import IncompleteStreamError, ResponseFailedError, StreamError
+from my_llm import (
+    IncompleteStreamError,
+    ResponseFailedError,
+    ResponseIncompleteError,
+    StreamError,
+)
 from openai import AuthenticationError
 from rich.cells import cell_len
 from rich.console import Console
@@ -186,10 +191,21 @@ class UITests(unittest.TestCase):
         for error in (
             IncompleteStreamError("PRIVATE", details={"body": "PRIVATE"}),
             ResponseFailedError("PRIVATE", details={"body": "PRIVATE"}),
+            ResponseIncompleteError("PRIVATE", details={"reason": "content_filter"}),
         ):
             message, hint = explain_error(error, can_retry=True)
             self.assertNotIn("PRIVATE", message + hint)
             self.assertIn("/retry", hint)
+
+    def test_responses_output_limit_has_budget_guidance(self):
+        message, hint = explain_error(
+            ResponseIncompleteError("PRIVATE", details={"reason": "max_output_tokens"}),
+            can_retry=True,
+        )
+        self.assertIn("输出长度上限", message)
+        self.assertIn("输出预算", hint)
+        self.assertIn("/retry", hint)
+        self.assertNotIn("PRIVATE", message + hint)
 
     def test_step_limit_does_not_offer_a_futile_retry(self):
         _, hint = explain_error(

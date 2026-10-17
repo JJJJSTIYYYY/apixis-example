@@ -2,17 +2,16 @@
 
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
-from anthropic import AsyncAnthropic
-from google import genai
-from google.genai import types
-from my_llm import MyLLM, StreamError
-from ollama import AsyncClient
+from my_llm import MyLLM, ResponseFailedError, StreamError
+from sdk_transport import sdk_transport
 
-from example.core import llm
+from example.core import history, llm, settings
 from example.core.tools import get_tools_schema
 
 
@@ -121,12 +120,30 @@ def events_for(protocol, finish_reason=None, *, with_tool=False):
     ]
 
 
+def response_for(protocol, events):
+    if protocol == "ollama":
+        body = "\n".join(json.dumps(event) for event in events) + "\n"
+        mime = "application/x-ndjson"
+    else:
+        body = "".join(
+            (f"event: {event['type']}\n" if protocol == "anthropic" else "")
+            + f"data: {json.dumps(event)}\n\n"
+            for event in events
+        )
+        mime = "text/event-stream"
+    return httpx.Response(200, text=body, headers={"content-type": mime})
+
+
 class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_presets_use_unified_completion_and_reject_truncation(self):
         for name, native_finish, unified_finish in (
             ("anthropic", "end_turn", "stop"),
             ("anthropic", "max_tokens", "length"),
-            ("anthropic", "model_context_window_exceeded", "length"),
+            (
+                "anthropic",
+                "model_context_window_exceeded",
+                "model_context_window_exceeded",
+            ),
             ("anthropic", "tool_use", "tool_calls"),
             ("anthropic", "pause_turn", "pause_turn"),
             ("anthropic", "refusal", "content_filter"),
@@ -154,48 +171,29 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                     events = events_for(
                         name, native_finish, with_tool=unified_finish == "tool_calls"
                     )
-                    if name == "ollama":
-                        body = "\n".join(json.dumps(event) for event in events) + "\n"
-                        mime = "application/x-ndjson"
-                    else:
-                        body = "".join(
-                            (f"event: {event['type']}\n" if name == "anthropic" else "")
-                            + f"data: {json.dumps(event)}\n\n"
-                            for event in events
-                        )
-                        mime = "text/event-stream"
-                    return httpx.Response(
-                        200, text=body, headers={"content-type": mime}
-                    )
+                    return response_for(name, events)
 
-                transport = httpx.MockTransport(handler)
-                http = None
-                if name == "anthropic":
-                    http = httpx.AsyncClient(transport=transport)
-                    client = AsyncAnthropic(
-                        api_key="test",
-                        base_url="https://native.test",
-                        max_retries=0,
-                        http_client=http,
-                    )
-                elif name == "gemini":
-                    http = httpx.AsyncClient(transport=transport)
-                    client = genai.Client(
-                        api_key="test",
-                        http_options=types.HttpOptions(
-                            base_url="https://native.test",
-                            httpx_async_client=http,
-                            retry_options=types.HttpRetryOptions(attempts=1),
-                        ),
-                    )
-                else:
-                    client = AsyncClient(
-                        host="https://native.test", transport=transport
-                    )
-                try:
+                with sdk_transport(handler):
                     provider, model = llm.get_profiles(name)
-                    adapter = MyLLM(provider=provider, model=model, client=client)
+                    adapter = MyLLM(
+                        provider=provider, model=model, stdio_protocol="openai_chat"
+                    )
                     with patch.object(llm, "create_llm", return_value=adapter):
+                        if unified_finish in (
+                            "pause_turn",
+                            "model_context_window_exceeded",
+                        ):
+                            with self.assertRaises(ResponseFailedError) as error:
+                                await llm.stream_reply(
+                                    [{"role": "user", "content": "hello"}],
+                                    get_tools_schema(),
+                                    provider=name,
+                                    model=model.model,
+                                )
+                            self.assertEqual(
+                                error.exception.details, {"reason": native_finish}
+                            )
+                            continue
                         if unified_finish == "length":
                             with self.assertRaisesRegex(
                                 StreamError, "长度上限"
@@ -215,7 +213,7 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                                 model=model.model,
                             )
                     self.assertEqual(message["content"], "OK")
-                    self.assertEqual(message["finish_reason"], unified_finish)
+                    self.assertNotIn("finish_reason", message)
                     if unified_finish == "tool_calls":
                         self.assertEqual(len(message["tool_calls"]), 1)
                         self.assertEqual(
@@ -255,11 +253,59 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                         self.assertNotIn("thinking_budget", thinking)
                     else:
                         self.assertIs(reasoning_body["think"], True)
-                finally:
-                    if name == "gemini":
-                        await client.aio.aclose()
-                        client.close()
-                    else:
-                        await client.close()
-                    if http is not None:
-                        await http.aclose()
+
+    async def test_native_tool_messages_survive_persistence_and_replay(self):
+        for name in ("anthropic", "gemini", "ollama"):
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as folder,
+                patch.object(settings, "SETTINGS_DIR", Path(folder)),
+                patch.dict(os.environ, {"LLM_API_KEY": "local-test-only"}, clear=True),
+            ):
+                requests = []
+
+                def handler(request):
+                    requests.append(json.loads(request.content))
+                    first = len(requests) == 1
+                    finish = "tool_use" if first and name == "anthropic" else None
+                    return response_for(name, events_for(name, finish, with_tool=first))
+
+                messages = [{"role": "user", "content": "run a command"}]
+                with sdk_transport(handler):
+                    result = await llm.stream_reply(
+                        messages, get_tools_schema(), provider=name
+                    )
+                    call = result["tool_calls"][0]
+                    messages.extend(
+                        [
+                            result,
+                            {
+                                "role": "tool",
+                                "tool_call_id": call["id"],
+                                "content": "persisted-result",
+                            },
+                        ]
+                    )
+                    conversation = history.create_conversation("tester", "tool replay")
+                    history.append_messages(conversation.id, messages)
+                    restored = history.load_messages(conversation.id)
+                    self.assertEqual(restored, messages)
+                    reply = await llm.stream_reply(
+                        restored, get_tools_schema(), provider=name
+                    )
+                self.assertEqual(reply["content"], "OK")
+                self.assertEqual(len(requests), 2)
+                replay = requests[-1]
+                if name == "anthropic":
+                    tool = replay["messages"][-1]["content"][0]
+                    self.assertEqual(tool["type"], "tool_result")
+                    self.assertEqual(tool["tool_use_id"], call["id"])
+                    self.assertEqual(tool["content"], "persisted-result")
+                elif name == "gemini":
+                    tool = replay["contents"][-1]["parts"][0]["functionResponse"]
+                    self.assertEqual(tool["name"], "run_command")
+                    self.assertIn("persisted-result", str(tool["response"]))
+                else:
+                    tool = replay["messages"][-1]
+                    self.assertEqual(tool["role"], "tool")
+                    self.assertEqual(tool["content"], "persisted-result")

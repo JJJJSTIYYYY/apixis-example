@@ -5,18 +5,18 @@ import json
 import os
 import unittest
 from dataclasses import replace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import httpx
 from my_llm import (
     ConfigurationError,
     IncompleteStreamError,
-    MessageChunk,
-    MessageStream,
-    MyLLM,
+    ResponseFailedError,
+    ResponseIncompleteError,
     StreamError,
 )
-from openai import AsyncOpenAI, AuthenticationError
+from openai import AuthenticationError
+from sdk_transport import sdk_transport
 
 from example.core import llm
 from example.core.tools import get_tools_schema
@@ -64,6 +64,7 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
         max_tokens=None,
         extra_body=None,
         messages=None,
+        body=None,
     ):
         self.requests = []
 
@@ -71,10 +72,14 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
             self.requests.append(request)
             if status != 200:
                 return httpx.Response(status, json={"error": {"message": "PRIVATE"}})
-            body = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
+            if body is not None:
+                return httpx.Response(
+                    200, stream=body, headers={"Content-Type": "text/event-stream"}
+                )
+            data = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
             return httpx.Response(
                 200,
-                text=body + "data: [DONE]\n\n",
+                text=data + "data: [DONE]\n\n",
                 headers={"Content-Type": "text/event-stream"},
             )
 
@@ -102,22 +107,16 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
                 },
             ),
         ):
-            profile, model = llm.get_profiles(provider, "test-model")
-            async with AsyncOpenAI(
-                api_key="test-placeholder",
-                base_url=profile.base_url or "https://api.openai.com/v1",
-                max_retries=0,
-                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
-            ) as client:
-                adapter = MyLLM(provider=profile, model=model, client=client)
-                with patch.object(llm, "create_llm", return_value=adapter):
-                    return await llm.stream_reply(
-                        messages or MESSAGES,
-                        tools,
-                        on_text,
-                        provider=provider,
-                        model="test-model",
-                    )
+            with sdk_transport(handle) as clients:
+                result = await llm.stream_reply(
+                    messages or MESSAGES,
+                    tools,
+                    on_text,
+                    provider=provider,
+                    model="test-model",
+                )
+            self.assertTrue(all(client.is_closed for client in clients))
+            return result
 
     async def test_content_reasoning_and_fragmented_tools_use_library_assembly(self):
         chunks = []
@@ -157,14 +156,10 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
         result = await self.request(events, on_text=chunks.append)
         self.assertEqual(chunks, ["hi"])
         self.assertEqual(result["reasoning_content"], "thought")
-        self.assertEqual([call["id"] for call in result["tool_calls"]], ["one", "two"])
-        self.assertEqual(
-            result["tool_calls"][1]["function"],
-            {
-                "name": "run_command",
-                "arguments": '{"command":"pwd"}',
-            },
-        )
+        self.assertEqual([call["id"] for call in result["tool_calls"]], ["two", "one"])
+        function = result["tool_calls"][0]["function"]
+        self.assertEqual(function["name"], "run_command")
+        self.assertEqual(json.loads(function["arguments"]), {"command": "pwd"})
 
     async def test_deepseek_and_kimi_configure_native_token_limit_and_tools(self):
         for provider, host in (
@@ -188,7 +183,7 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("max_completion_tokens", payload)
                 self.assertEqual(payload["tools"], get_tools_schema())
 
-    async def test_openai_responses_preserves_native_output_and_replays_tools(self):
+    async def test_openai_responses_returns_chat_message_and_replays_tools(self):
         item = {
             "type": "function_call",
             "id": "fc_1",
@@ -203,10 +198,10 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
             tools=get_tools_schema(),
             max_tokens=64,
         )
-        self.assertEqual(result["response_output"], [item])
-        self.assertEqual(result["response_id"], "resp_1")
+        self.assertEqual(result["role"], "assistant")
+        self.assertNotIn("response_output", result)
         self.assertEqual(result["tool_calls"][0]["id"], "call_1")
-        self.assertEqual(result["finish_reason"], "tool_calls")
+        self.assertNotIn("finish_reason", result)
         payload = json.loads(self.requests[0].content)
         self.assertEqual(self.requests[0].url.path, "/v1/responses")
         self.assertEqual(payload["max_output_tokens"], 64)
@@ -235,6 +230,60 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
     async def test_disconnect_remains_a_failed_turn(self):
         with self.assertRaises(IncompleteStreamError):
             await self.request([chat_event({"content": "partial"})])
+
+    async def test_usage_tail_is_consumed_without_entering_message_history(self):
+        usage = chat_event({})
+        usage["choices"] = []
+        usage["usage"] = {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+        chunks = []
+        result = await self.request(
+            [chat_event({"content": "OK"}, "stop"), usage], on_text=chunks.append
+        )
+        self.assertEqual(chunks, ["OK"])
+        self.assertEqual(result, {"role": "assistant", "content": "OK"})
+
+    async def test_responses_failures_keep_library_errors_and_partial_chat_message(
+        self,
+    ):
+        for kind, error_type, details_key, details in (
+            (
+                "response.incomplete",
+                ResponseIncompleteError,
+                "incomplete_details",
+                {"reason": "max_output_tokens"},
+            ),
+            (
+                "response.failed",
+                ResponseFailedError,
+                "error",
+                {"code": "server_error", "message": "PRIVATE"},
+            ),
+        ):
+            with self.subTest(kind=kind):
+                terminal = response_completed([])
+                terminal["type"] = kind
+                terminal["response"]["status"] = kind.removeprefix("response.")
+                terminal["response"][details_key] = details
+                with self.assertRaises(error_type) as failure:
+                    await self.request(
+                        [
+                            {
+                                "type": "response.output_text.delta",
+                                "sequence_number": 1,
+                                "item_id": "msg_1",
+                                "output_index": 0,
+                                "content_index": 0,
+                                "delta": "partial",
+                            },
+                            terminal,
+                        ],
+                        provider="openai",
+                    )
+                self.assertEqual(failure.exception.details, details)
+                self.assertEqual(failure.exception.partial_message["role"], "assistant")
+                self.assertEqual(
+                    failure.exception.partial_message["content"], "partial"
+                )
 
     async def test_cross_provider_chat_and_responses_tool_history(self):
         call = {
@@ -298,70 +347,99 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
     async def test_token_limit_is_not_committed_as_success(self):
         with self.assertRaisesRegex(StreamError, "长度上限") as failure:
             await self.request([chat_event({"content": "partial"}, "length")])
-        self.assertEqual(failure.exception.partial_message["finish_reason"], "length")
+        self.assertEqual(failure.exception.partial_message["content"], "partial")
 
     async def test_other_completion_reasons_are_returned_without_application_mapping(
         self,
     ):
-        for reason in ("stop", "content_filter", "custom_reason"):
+        for reason in ("stop", "content_filter"):
             with self.subTest(reason=reason):
                 message = await self.request([chat_event({"content": "OK"}, reason)])
-                self.assertEqual(message["finish_reason"], reason)
+                self.assertEqual(message["content"], "OK")
+                self.assertNotIn("finish_reason", message)
+
+    async def test_unrepresentable_chat_finish_remains_a_library_failure(self):
+        with self.assertRaises(ResponseFailedError) as failure:
+            await self.request([chat_event({"content": "partial"}, "custom_reason")])
+        self.assertEqual(failure.exception.details, {"reason": "custom_reason"})
+
+    async def test_official_chat_does_not_inherit_compatible_reasoning_fields(self):
+        with patch.dict(
+            llm.PROVIDERS,
+            {"openai": replace(llm.get_provider("openai"), protocol="openai_chat")},
+        ):
+            await self.request(
+                [chat_event({"content": "OK"}, "stop")],
+                provider="openai",
+                messages=MESSAGES
+                + [
+                    {
+                        "role": "assistant",
+                        "content": "old",
+                        "reasoning_content": "thought",
+                    },
+                    {"role": "user", "content": "continue"},
+                ],
+            )
+        body = json.loads(self.requests[0].content)
+        self.assertNotIn("reasoning_content", body["messages"][1])
+        self.assertNotIn("thinking", body)
 
     async def test_sdk_authentication_error_is_preserved(self):
         with self.assertRaises(AuthenticationError):
             await self.request([], status=401)
 
     async def test_stream_closes_when_ui_callback_fails(self):
-        closed = []
+        class Body(httpx.AsyncByteStream):
+            closed = False
 
-        async def chunks():
-            try:
-                yield MessageChunk(content="hi")
-                yield MessageChunk(finish_reason="stop")
-            finally:
-                closed.append(True)
+            async def __aiter__(self):
+                yield f"data: {json.dumps(chat_event({'content': 'hi'}))}\n\n".encode()
+                raise AssertionError("callback should stop consuming the stream")
 
-        adapter = Mock(generate=AsyncMock(return_value=MessageStream(chunks())))
-        with patch.object(llm, "create_llm", return_value=adapter):
-            with self.assertRaisesRegex(RuntimeError, "display failed"):
-                await llm.stream_reply(
-                    MESSAGES, on_text=Mock(side_effect=RuntimeError("display failed"))
-                )
-        self.assertEqual(closed, [True])
+            async def aclose(self):
+                self.closed = True
+
+        body = Body()
+        with self.assertRaisesRegex(RuntimeError, "display failed"):
+            await self.request(
+                [], body=body, on_text=Mock(side_effect=RuntimeError("display failed"))
+            )
+        self.assertTrue(body.closed)
 
     async def test_stream_closes_on_cancellation(self):
         entered = asyncio.Event()
-        closed = asyncio.Event()
 
-        async def chunks():
-            try:
+        class Body(httpx.AsyncByteStream):
+            closed = False
+
+            async def __aiter__(self):
+                yield f"data: {json.dumps(chat_event({'content': 'hi'}))}\n\n".encode()
                 entered.set()
-                yield MessageChunk(content="hi")
                 await asyncio.Event().wait()
-            finally:
-                closed.set()
 
-        adapter = Mock(generate=AsyncMock(return_value=MessageStream(chunks())))
-        with patch.object(llm, "create_llm", return_value=adapter):
-            task = asyncio.create_task(llm.stream_reply(MESSAGES))
-            await asyncio.wait_for(entered.wait(), 1)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertTrue(closed.is_set())
+            async def aclose(self):
+                self.closed = True
+
+        body = Body()
+        task = asyncio.create_task(self.request([], body=body))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(body.closed)
 
 
 class ProviderTests(unittest.TestCase):
     def test_provider_keys_models_and_protocols(self):
-        for name, key, protocol, api in (
-            ("deepseek", "DEEPSEEK_API_KEY", "openai", "chat_completions"),
-            ("kimi", "KIMI_API_KEY", "openai", "chat_completions"),
-            ("kimi", "MOONSHOT_API_KEY", "openai", "chat_completions"),
-            ("openai", "OPENAI_API_KEY", "openai", "responses"),
-            ("anthropic", "ANTHROPIC_API_KEY", "anthropic", "chat_completions"),
-            ("gemini", "GOOGLE_API_KEY", "gemini", "chat_completions"),
-            ("ollama", None, "ollama", "chat_completions"),
+        for name, key, protocol in (
+            ("deepseek", "DEEPSEEK_API_KEY", "openai_chat"),
+            ("kimi", "KIMI_API_KEY", "openai_chat"),
+            ("kimi", "MOONSHOT_API_KEY", "openai_chat"),
+            ("openai", "OPENAI_API_KEY", "openai_responses"),
+            ("anthropic", "ANTHROPIC_API_KEY", "anthropic"),
+            ("gemini", "GOOGLE_API_KEY", "gemini"),
+            ("ollama", None, "ollama"),
         ):
             with (
                 self.subTest(name=name, key=key),
@@ -371,9 +449,10 @@ class ProviderTests(unittest.TestCase):
             ):
                 provider, model = llm.get_profiles(name, "test-model")
                 self.assertEqual(provider.protocol, protocol)
-                self.assertEqual(provider.api_type, api)
                 self.assertTrue(model.supports_function_calling)
-                llm.create_llm(name, "test-model")
+                self.assertEqual(
+                    llm.create_llm(name, "test-model").stdio_protocol, "openai_chat"
+                )
 
     def test_only_credentials_are_read_from_environment(self):
         with patch.dict(
@@ -391,7 +470,7 @@ class ProviderTests(unittest.TestCase):
         ):
             provider, model = llm.get_profiles("deepseek", "explicit-model")
             self.assertEqual(model.model, "explicit-model")
-            self.assertEqual(provider.api_type, "chat_completions")
+            self.assertEqual(provider.protocol, "openai_chat")
             self.assertEqual(provider.base_url, "https://api.deepseek.com/v1")
             self.assertIsNone(model.max_tokens)
 

@@ -21,8 +21,8 @@ from apixis import (
     subscribe,
     unsubscribe,
 )
-from my_llm import MyLLM
-from openai import AsyncOpenAI, BadRequestError
+from openai import BadRequestError
+from sdk_transport import sdk_transport
 
 from example.app import chat_loop, run_prompt
 from example.core import agent, history, llm, settings, tools, workspace
@@ -442,7 +442,7 @@ class AgentTests(SharedLoopTests):
                 self.assertEqual(len(requests), 3)
                 self.assertEqual(body["model"], "kimi-k3")
                 self.assertEqual(body["messages"][-1]["role"], "tool")
-                self.assertEqual(body["messages"][-2]["reasoning_content"], "")
+                self.assertNotIn("reasoning_content", body["messages"][-2])
                 delta, finish = {"content": "recovered"}, "stop"
             event = {
                 "id": "chat_1",
@@ -468,21 +468,10 @@ class AgentTests(SharedLoopTests):
             return await original_reply(messages, *args, **kwargs)
 
         execute = AsyncMock(return_value='{"output":"apixis"}')
-        async with AsyncOpenAI(
-            api_key="local-test-only",
-            base_url="https://mode-switch.test/v1",
-            max_retries=0,
-            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
-        ) as client:
-
-            def create_llm(provider="deepseek", model=None):
-                profile, model_profile = llm.get_profiles(provider, model)
-                return MyLLM(provider=profile, model=model_profile, client=client)
-
+        with sdk_transport(handle):
             with (
                 patch.dict(os.environ, {"LLM_API_KEY": "local-test-only"}, clear=True),
                 patch.object(llm, "PROVIDERS", presets),
-                patch.object(llm, "create_llm", side_effect=create_llm),
                 patch.object(agent, "stream_reply", stop_after_tool),
                 patch("example.core.events.execute_tool", execute),
             ):
@@ -516,8 +505,8 @@ class AgentTests(SharedLoopTests):
             ["system", "user", "assistant", "tool", "assistant"],
         )
         self.assertFalse(messages[-3].get("reasoning_content"))
-        self.assertEqual(messages[-3]["finish_reason"], "tool_calls")
-        self.assertEqual(messages[-1]["finish_reason"], "stop")
+        self.assertEqual(messages[-3]["tool_calls"][0]["id"], tool_call()["id"])
+        self.assertNotIn("finish_reason", messages[-1])
         self.assertEqual(messages[-1]["content"], "recovered")
 
     async def test_guard_and_user_rejection_never_dispatch_tools(self):

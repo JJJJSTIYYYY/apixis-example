@@ -196,8 +196,8 @@ def touch_conversation(conversation_id: int) -> None:
 def append_messages(conversation_id: int, messages: list[dict]) -> None:
     """Persist a batch of messages and bump the conversation's updated_at.
 
-    Save the complete public my-llm Message, including reasoning, Responses
-    output items and native signatures. Legacy columns remain readable for
+    Save the complete standard Chat message returned by my-llm-py, including
+    reasoning and any retained extensions. Legacy columns remain readable for
     databases created before the full-message format was introduced.
     """
     if not messages:

@@ -4,7 +4,12 @@ import anthropic
 import httpx
 import openai
 from google.genai.errors import APIError as GeminiAPIError
-from my_llm import ConfigurationError, IncompleteStreamError, StreamError
+from my_llm import (
+    ConfigurationError,
+    IncompleteStreamError,
+    ResponseIncompleteError,
+    StreamError,
+)
 from ollama import ResponseError as OllamaResponseError
 
 from .terminal import plain_text
@@ -68,7 +73,11 @@ def explain_error(error: Exception, *, can_retry: bool = False) -> tuple[str, st
     if isinstance(error, ConfigurationError):
         return "模型配置无效。", plain_text(error)
     if isinstance(error, StreamError):
-        if "长度上限" in str(error):
+        if "长度上限" in str(error) or (
+            isinstance(error, ResponseIncompleteError)
+            and isinstance(error.details, dict)
+            and error.details.get("reason") == "max_output_tokens"
+        ):
             return (
                 "回复达到输出长度上限。",
                 "请提高当前模型 Profile 的输出预算，或切换到预算充足的模型。" + retry,

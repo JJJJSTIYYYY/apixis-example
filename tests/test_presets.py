@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import httpx
 from my_llm import ConfigurationError, MyLLM
-from openai import AsyncOpenAI
+from sdk_transport import sdk_transport
 
 from example.core import llm
 from example.core.tools import get_tools_schema
@@ -24,7 +24,7 @@ class PresetTests(unittest.IsolatedAsyncioTestCase):
 
         def handle(request):
             requests.append(request)
-            if profile.api_type == "responses":
+            if profile.protocol == "openai_responses":
                 event = {
                     "type": "response.completed",
                     "sequence_number": 1,
@@ -60,13 +60,10 @@ class PresetTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Content-Type": "text/event-stream"},
             )
 
-        async with AsyncOpenAI(
-            api_key="local-test-only",
-            base_url=profile.base_url or "https://api.openai.com/v1",
-            max_retries=0,
-            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
-        ) as client:
-            adapter = MyLLM(provider=profile, model=selected, client=client)
+        with sdk_transport(handle):
+            adapter = MyLLM(
+                provider=profile, model=selected, stdio_protocol="openai_chat"
+            )
             await adapter.generate(
                 messages=[{"role": "user", "content": "hello"}],
                 tools=get_tools_schema(),
@@ -89,6 +86,11 @@ class PresetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["max_completion_tokens"], 512)
         self.assertNotIn("max_tokens", body)
         self.assertNotIn("thinking", body)
+
+    async def test_kimi_k2_explicit_thinking_binding_omits_native_effort(self):
+        body = await self.request("kimi", "kimi-k2.6", effort="high")
+        self.assertEqual(body["thinking"], {"type": "enabled"})
+        self.assertNotIn("reasoning_effort", body)
 
     async def test_deepseek_current_models_enable_thinking_and_map_supported_effort(
         self,

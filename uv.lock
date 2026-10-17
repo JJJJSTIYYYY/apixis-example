@@ -320,7 +320,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "apixis", specifier = ">=1.1.1" },
-    { name = "my-llm-py", specifier = ">=0.1.4" },
+    { name = "my-llm-py", specifier = ">=1.0.1" },
     { name = "rich", specifier = ">=15.0.0" },
 ]
 
@@ -495,7 +495,7 @@ wheels = [
 
 [[package]]
 name = "my-llm-py"
-version = "0.1.4"
+version = "1.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
@@ -503,9 +503,9 @@ dependencies = [
     { name = "ollama" },
     { name = "openai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d3/a5/05a0cdfcdb918ef15f3988b355d991a83d71f0e6f2782915abd577522f82/my_llm_py-0.1.4.tar.gz", hash = "sha256:cacd4300eba7c202e1afc3b9295951025f501b4dbade339678231e424207e3b4", size = 84750, upload-time = "2026-10-15T18:23:43.245Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/0e/1bb2643754bc1c7c265c641fdac89e8b5c6a79f8bdaa20c4254fb4ab3e6c/my_llm_py-1.0.1.tar.gz", hash = "sha256:14c7207c8d71db8eb9ea682b4aba2d3ab8c0888fed099c334c01efcb7a21e935", size = 293447, upload-time = "2026-10-17T13:56:04.98Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/03/6d8935db9b2316c6712563d74de9f12fec5f76eef3f804183aa397ebe5c3/my_llm_py-0.1.4-py3-none-any.whl", hash = "sha256:1a11d019d54c1af9ea8e08e06b308fc18c71b3dafbe7983959e8f364a691367a", size = 64465, upload-time = "2026-10-15T18:23:41.383Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/73/5c21311170f651b662352c2876597d71a9eb6c39afa4e88dc3a6d6017233/my_llm_py-1.0.1-py3-none-any.whl", hash = "sha256:7d3b731ac97ca01591aebe74eb57fdaf50da3ac142ba579f93537a988c1e77b3", size = 129689, upload-time = "2026-10-17T13:56:03.334Z" },
 ]
 
 [[package]]

@@ -9,8 +9,6 @@ from typing import Any
 
 from my_llm import (
     ConfigurationError,
-    Message,
-    MessageChunk,
     ModelProfile,
     MyLLM,
     ProviderProfile,
@@ -72,7 +70,9 @@ def get_profiles(
 def create_llm(provider: str = "deepseek", model: str | None = None) -> MyLLM:
     """Let my-llm-py own each request's SDK resources."""
     provider_profile, model_profile = get_profiles(provider, model)
-    return MyLLM(provider=provider_profile, model=model_profile)
+    return MyLLM(
+        provider=provider_profile, model=model_profile, stdio_protocol="openai_chat"
+    )
 
 
 def model_label(provider: str = "deepseek", model: str | None = None) -> str:
@@ -90,21 +90,23 @@ async def stream_reply(
     *,
     provider: str = "deepseek",
     model: str | None = None,
-) -> Message:
+) -> dict[str, Any]:
     """Pass complete history unchanged; the library handles protocol compatibility."""
     stream = await create_llm(provider, model).generate(
         messages=messages, tools=tools, stream=True
     )
-    combined = MessageChunk()
+    truncated = False
     async with stream:
-        async for chunk in stream:
-            combined += chunk
-            if chunk.content and on_text is not None:
-                on_text(chunk.content)
-    message = combined.to_message(require_finished=True)
-    if message.get("finish_reason") == "length":
+        async for event in stream:
+            for choice in event.get("choices", []):
+                if choice.get("finish_reason") == "length":
+                    truncated = True
+                text = choice.get("delta", {}).get("content")
+                if text and on_text is not None:
+                    on_text(text)
+    if truncated:
         raise StreamError(
             "回复达到输出长度上限；请调整当前模型 Profile 的输出预算。",
-            partial_message=message,
+            partial_message=stream.result,
         )
-    return message
+    return stream.result

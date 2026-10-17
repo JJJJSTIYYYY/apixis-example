@@ -4,7 +4,7 @@
 
 ## 启动
 
-需要 uv，项目使用 Python 3.14。uv 会根据 `.python-version` 准备解释器。
+需要 uv，项目使用 Python 3.14 和 my-llm-py 1.0.1。uv 会根据 `.python-version` 准备解释器。
 
 ```bash
 uv sync --locked
@@ -122,7 +122,7 @@ uv run example --prompt '你好' --max-steps 16
 
 单次模式也经过输入过滤和命令守卫。DeepSeek/Kimi 的输出预算直接配置在 `ModelProfile.extra_body`：DeepSeek 和 Kimi K2.x 使用 `{"max_tokens": 4096}`，Kimi K3 使用 `{"max_completion_tokens": 4096}`；其他协议使用库的 `ModelProfile.max_tokens`。未显式配置时沿用现有默认值。
 
-完成原因使用 MyLLM 0.1.4 的统一 `finish_reason`：`stop`、`length`、`tool_calls`、`content_filter`；特殊原因由库保留。应用遇到 `length` 时保留失败快照供 `/retry`，截断回复不写入历史。
+应用以标准 `openai_chat` 格式调用 my-llm-py 1.0，上游协议转换、工具参数组装与完整消息收集交给库。完成原因读取流事件的 `choices[*].finish_reason`，最终消息直接使用 `stream.result`。遇到 `length` 或库的 Responses incomplete/failed 异常时保留失败快照供 `/retry`，截断回复不写入历史；完成原因和用量不额外写入历史消息。
 
 ## 结构
 
@@ -137,7 +137,7 @@ src/example/
     workspace.py       并发子图：directory + environment → summary
     events.py          工具请求/回复、自定义运行事件、后台计数
     providers.py       my-llm-py 的供应商 Profile 预设
-    llm.py             Profile 配置与 MessageChunk 流消费
+    llm.py             Profile 配置、标准 Chat 事件与 stream.result
     tools.py           工具注册与 shell 执行
     history.py         SQLite 历史
     settings.py        用户名与保存路径
@@ -155,4 +155,4 @@ src/example/
 uv run python -m unittest discover -s tests -v
 ```
 
-测试不需要 API Key，也不会访问付费接口。覆盖真实 Apixis 图与事件流程、审批顺序、异常、恢复、中止、my-llm-py 与官方 SDK 的模拟传输、原生消息历史保存，以及窄窗口、长输出和历史交互；另在独立进程中验证背压 128、队列 8 下的 160 路并发。
+测试不需要 API Key，也不会访问付费接口。覆盖真实 Apixis 图与事件流程、审批顺序、异常、恢复、中止、my-llm-py 与官方 SDK 的模拟传输、完整 Chat 消息与旧历史保存，以及窄窗口、长输出和历史交互；另在独立进程中验证背压 128、队列 8 下的 160 路并发。

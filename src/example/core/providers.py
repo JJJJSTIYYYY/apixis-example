@@ -13,6 +13,11 @@ PROVIDERS: dict[str, ProviderProfile] = {
         base_url="https://api.deepseek.com/v1",
         supports_reasoning_effort=True,
         reasoning_effort_mapping={"medium": "high", "xhigh": "high"},
+        replay_reasoning_content_when_tool_calls=True,
+        reasoning_enable_parameter={
+            "reasoning_effort": omit,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        },
         # Optional output budget belongs directly in ModelProfile.extra_body:
         # extra_body={"max_tokens": 4096}. Omission keeps the service default.
         models=[
@@ -27,6 +32,11 @@ PROVIDERS: dict[str, ProviderProfile] = {
     ),
     "kimi": ProviderProfile(
         base_url="https://api.moonshot.ai/v1",
+        replay_reasoning_content_when_tool_calls=True,
+        reasoning_enable_parameter={
+            "reasoning_effort": omit,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        },
         # Output budgets use ModelProfile.extra_body: max_completion_tokens
         # for K3, max_tokens for K2.x. No application-side conversion.
         models=[
@@ -58,7 +68,7 @@ PROVIDERS: dict[str, ProviderProfile] = {
     ),
     "openai": ProviderProfile(
         # Current Sol/Astra require Responses for function calling.
-        api_type="responses",
+        protocol="openai_responses",
         models=[
             ModelProfile(
                 model=model_id,
