@@ -38,7 +38,7 @@ Ollama 的默认选用较小的 9B 模型，并提供较新的 Qwen 3.6。列表
 - **Anthropic**：四个当前模型均支持工具和 adaptive thinking。
   Profile 使用 `thinking.type=adaptive`，显式请求推理时也沿用该配置，避免发送旧版
   `enabled/budget_tokens`。五档强度见 [effort 文档](https://platform.claude.com/docs/en/build-with-claude/effort)。
-  `max_tokens=4096` 是应用的输出预算，**不是模型最大输出限制**。
+  `extra_body=Config(default_value={"max_tokens": 4096})` 是应用的输出预算，**不是模型最大输出限制**。
 - **Gemini**：两个稳定模型均支持函数调用与 thinking，配置原生 `thinking_level`。
   预设允许公共接口中的 `low/medium/high`，不把 `xhigh/max` 透传为无效等级。
 - **Ollama**：官网标签确认这些模型支持 tools 和 thinking，使用原生协议；
@@ -56,3 +56,10 @@ DeepSeek、OpenAI、Gemini 页面提供的精确数值直接记录；Kimi、Clau
 
 文档核查不能证明某个账户已获模型权限、当地服务可达或本机已安装 Ollama 模型。
 本次未调用付费接口。后续更新预设时，应重新打开这些官方页面并更新核查日期。
+
+## MyLLM 1.3.2 配置形式
+
+本次只迁移配置接口，未重新核验模型目录，以上来源日期保持不变。
+模型 ID、上下文窗口和目录分别使用 Attribute；协议和 extra_body 使用 Config；
+推理开关、强度与能力使用 Parameter.path/supports。name/source 由 Profile 绑定。
+跨协议无法表达的历史内容默认抛 SemanticLossError，不会因切换自动清空历史或修补签名。

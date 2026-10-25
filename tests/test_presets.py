@@ -7,7 +7,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 import httpx
-from my_llm import ConfigurationError, MyLLM
+from my_llm import Config, ConfigurationError, MyLLM
 from sdk_transport import sdk_transport
 
 from example.core import llm
@@ -20,11 +20,11 @@ class PresetTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"LLM_API_KEY": "local-test-only"}, clear=True):
             profile, selected = llm.get_profiles(provider, model)
         if extra_body is not None:
-            selected = replace(selected, extra_body=extra_body)
+            selected = replace(selected, extra_body=Config(default_value=extra_body))
 
         def handle(request):
             requests.append(request)
-            if profile.protocol == "openai_responses":
+            if profile.protocol.default_value == "openai_responses":
                 event = {
                     "type": "response.completed",
                     "sequence_number": 1,
@@ -61,14 +61,14 @@ class PresetTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with sdk_transport(handle):
-            adapter = MyLLM(
+            async with MyLLM(
                 provider=profile, model=selected, stdio_protocol="openai_chat"
-            )
-            await adapter.generate(
-                messages=[{"role": "user", "content": "hello"}],
-                tools=get_tools_schema(),
-                reasoning_effort=effort,
-            )
+            ) as adapter:
+                await adapter.generate(
+                    messages=[{"role": "user", "content": "hello"}],
+                    tools=get_tools_schema(),
+                    reasoning_effort=effort,
+                )
         return json.loads(requests[0].content)
 
     async def test_kimi_k3_uses_effort_without_legacy_thinking_toggle(self):
@@ -116,7 +116,9 @@ class PresetTests(unittest.IsolatedAsyncioTestCase):
             for name, preset in llm.PROVIDERS.items():
                 self.assertTrue(preset.list_models(), name)
                 for model in preset.list_models():
-                    with self.subTest(provider=name, model=model.model):
-                        self.assertTrue(model.supports_function_calling)
-                        llm.create_llm(name, model.model)
-        self.assertEqual(llm.get_model("deepseek").model, "deepseek-flash")
+                    with self.subTest(provider=name, model=model.model.default_value):
+                        self.assertTrue(model.supports_function_calling.default_value)
+                        llm.create_llm(name, model.model.default_value)
+        self.assertEqual(
+            llm.get_model("deepseek").model.default_value, "deepseek-flash"
+        )

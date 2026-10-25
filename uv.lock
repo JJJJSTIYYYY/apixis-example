@@ -313,14 +313,14 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "apixis" },
-    { name = "my-llm-py" },
+    { name = "my-llm-py", extra = ["all"] },
     { name = "rich" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "apixis", specifier = ">=1.1.1" },
-    { name = "my-llm-py", specifier = ">=1.0.1" },
+    { name = "my-llm-py", extras = ["all"], specifier = ">=1.3.2" },
     { name = "rich", specifier = ">=15.0.0" },
 ]
 
@@ -495,17 +495,22 @@ wheels = [
 
 [[package]]
 name = "my-llm-py"
-version = "1.0.1"
+version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/00/0e/4008a9113cac14f2663ec71f886393b982a2c375e775b965c7afdd611d88/my_llm_py-1.3.2.tar.gz", hash = "sha256:2b4f2d47bc263e7c17aeaa791a0dc187b4e65a04f6003f607f5818fcf53442e0", size = 485212, upload-time = "2026-10-25T11:11:28.099Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/5f/a73e715ffe0381e6b19d4e3774cfbc8012f1bb5d358c0324e482c91e8b08/my_llm_py-1.3.2-py3-none-any.whl", hash = "sha256:1945d9f6907728994b26776a290d5ad1c8b9ba2c357f17a6a6470679e54ae913", size = 140180, upload-time = "2026-10-25T11:11:26.417Z" },
+]
+
+[package.optional-dependencies]
+all = [
     { name = "anthropic" },
     { name = "google-genai" },
     { name = "ollama" },
     { name = "openai" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/69/0e/1bb2643754bc1c7c265c641fdac89e8b5c6a79f8bdaa20c4254fb4ab3e6c/my_llm_py-1.0.1.tar.gz", hash = "sha256:14c7207c8d71db8eb9ea682b4aba2d3ab8c0888fed099c334c01efcb7a21e935", size = 293447, upload-time = "2026-10-17T13:56:04.98Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/73/5c21311170f651b662352c2876597d71a9eb6c39afa4e88dc3a6d6017233/my_llm_py-1.0.1-py3-none-any.whl", hash = "sha256:7d3b731ac97ca01591aebe74eb57fdaf50da3ac142ba579f93537a988c1e77b3", size = 129689, upload-time = "2026-10-17T13:56:03.334Z" },
 ]
 
 [[package]]

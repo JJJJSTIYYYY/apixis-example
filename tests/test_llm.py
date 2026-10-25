@@ -9,8 +9,11 @@ from unittest.mock import Mock, patch
 
 import httpx
 from my_llm import (
+    Attribute,
+    Config,
     ConfigurationError,
     IncompleteStreamError,
+    Parameter,
     ResponseFailedError,
     ResponseIncompleteError,
     StreamError,
@@ -20,6 +23,7 @@ from sdk_transport import sdk_transport
 
 from example.core import llm
 from example.core.tools import get_tools_schema
+from example.ui.errors import explain_error
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 
@@ -96,27 +100,35 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
                 {
                     provider: replace(
                         llm.get_provider(provider),
-                        models=[
-                            replace(
-                                llm.get_model(provider, "test-model"),
-                                max_tokens=max_tokens,
-                                extra_body=extra_body,
-                            )
-                        ],
+                        models=Attribute(
+                            default_value=[
+                                replace(
+                                    llm.get_model(provider, "test-model"),
+                                    max_tokens=Parameter(
+                                        path="$.max_output_tokens",
+                                        default_value=max_tokens,
+                                    )
+                                    if max_tokens is not None
+                                    else None,
+                                    extra_body=Config(default_value=extra_body),
+                                )
+                            ]
+                        ),
                     )
                 },
             ),
         ):
             with sdk_transport(handle) as clients:
-                result = await llm.stream_reply(
-                    messages or MESSAGES,
-                    tools,
-                    on_text,
-                    provider=provider,
-                    model="test-model",
-                )
-            self.assertTrue(all(client.is_closed for client in clients))
-            return result
+                try:
+                    return await llm.stream_reply(
+                        messages or MESSAGES,
+                        tools,
+                        on_text,
+                        provider=provider,
+                        model="test-model",
+                    )
+                finally:
+                    self.assertTrue(all(client.is_closed for client in clients))
 
     async def test_content_reasoning_and_fragmented_tools_use_library_assembly(self):
         chunks = []
@@ -242,6 +254,52 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, ["OK"])
         self.assertEqual(result, {"role": "assistant", "content": "OK"})
 
+    async def test_usage_is_read_from_instance_after_success_and_survives_failure(self):
+        usage = chat_event({})
+        usage["choices"] = []
+        usage["usage"] = {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+        calls = 0
+
+        def handle(request):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return httpx.Response(401, json={"error": {"message": "test error"}})
+            self.assertTrue(
+                json.loads(request.content)["stream_options"]["include_usage"]
+            )
+            events = [chat_event({"content": "OK"}, "stop"), usage]
+            return httpx.Response(
+                200,
+                text="".join(f"data: {json.dumps(event)}\n\n" for event in events)
+                + "data: [DONE]\n\n",
+                headers={"Content-Type": "text/event-stream"},
+            )
+
+        with (
+            patch.dict(os.environ, {"DEEPSEEK_API_KEY": "local-test-only"}, clear=True),
+            sdk_transport(handle) as clients,
+        ):
+            provider, model = llm.get_profiles()
+            provider = replace(
+                provider, usage_mode=Config(default_value="stream_options")
+            )
+            async with llm.MyLLM(
+                provider=provider, model=model, stdio_protocol="openai_chat"
+            ) as adapter:
+                self.assertIsNone(adapter.get_last_usage())
+                stream = await adapter.generate(messages=MESSAGES, stream=True)
+                async with stream:
+                    events = [event async for event in stream]
+                self.assertTrue(all("usage" not in event for event in events))
+                first = adapter.get_last_usage()
+                self.assertEqual((first.input, first.output, first.total), (2, 1, 3))
+                self.assertIsNot(first, adapter.get_last_usage())
+                with self.assertRaises(AuthenticationError):
+                    await adapter.generate(messages=MESSAGES)
+                self.assertEqual(adapter.get_last_usage(), first)
+            self.assertTrue(all(client.is_closed for client in clients))
+
     async def test_responses_failures_keep_library_errors_and_partial_chat_message(
         self,
     ):
@@ -279,7 +337,12 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
                         ],
                         provider="openai",
                     )
-                self.assertEqual(failure.exception.details, details)
+                # 1.1.0 exposes a mapping view for SDK error payloads.
+                self.assertEqual(dict(failure.exception.details), details)
+                if kind == "response.incomplete":
+                    title, hint = explain_error(failure.exception, can_retry=True)
+                    self.assertIn("长度上限", title)
+                    self.assertIn("/retry", hint)
                 self.assertEqual(failure.exception.partial_message["role"], "assistant")
                 self.assertEqual(
                     failure.exception.partial_message["content"], "partial"
@@ -363,10 +426,17 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
             await self.request([chat_event({"content": "partial"}, "custom_reason")])
         self.assertEqual(failure.exception.details, {"reason": "custom_reason"})
 
-    async def test_official_chat_does_not_inherit_compatible_reasoning_fields(self):
+    async def test_chat_default_replays_reasoning_without_injecting_thinking_toggle(
+        self,
+    ):
         with patch.dict(
             llm.PROVIDERS,
-            {"openai": replace(llm.get_provider("openai"), protocol="openai_chat")},
+            {
+                "openai": replace(
+                    llm.get_provider("openai"),
+                    protocol=Config(default_value="openai_chat"),
+                )
+            },
         ):
             await self.request(
                 [chat_event({"content": "OK"}, "stop")],
@@ -382,7 +452,7 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
         body = json.loads(self.requests[0].content)
-        self.assertNotIn("reasoning_content", body["messages"][1])
+        self.assertEqual(body["messages"][1]["reasoning_content"], "thought")
         self.assertNotIn("thinking", body)
 
     async def test_sdk_authentication_error_is_preserved(self):
@@ -431,6 +501,23 @@ class LLMTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_ollama_optional_key_uses_client_authorization_header(self):
+        for key in (None, "local-test-only"):
+            with (
+                self.subTest(authenticated=key is not None),
+                patch.dict(os.environ, {"LLM_API_KEY": key} if key else {}, clear=True),
+            ):
+                provider, _ = llm.get_profiles("ollama")
+                self.assertIsInstance(provider.api_key, Parameter)
+                self.assertEqual(provider.api_key.path, "$.extra_headers.Authorization")
+                self.assertNotIn("local-test-only", repr(provider))
+                parameters = llm.create_llm("ollama").client_parameters
+                self.assertNotIn("api_key", parameters)
+                self.assertEqual(
+                    parameters["headers"],
+                    {"Authorization": "Bearer local-test-only"} if key else {},
+                )
+
     def test_provider_keys_models_and_protocols(self):
         for name, key, protocol in (
             ("deepseek", "DEEPSEEK_API_KEY", "openai_chat"),
@@ -448,8 +535,8 @@ class ProviderTests(unittest.TestCase):
                 ),
             ):
                 provider, model = llm.get_profiles(name, "test-model")
-                self.assertEqual(provider.protocol, protocol)
-                self.assertTrue(model.supports_function_calling)
+                self.assertEqual(provider.protocol.default_value, protocol)
+                self.assertTrue(model.supports_function_calling.default_value)
                 self.assertEqual(
                     llm.create_llm(name, "test-model").stdio_protocol, "openai_chat"
                 )
@@ -469,30 +556,37 @@ class ProviderTests(unittest.TestCase):
             clear=True,
         ):
             provider, model = llm.get_profiles("deepseek", "explicit-model")
-            self.assertEqual(model.model, "explicit-model")
-            self.assertEqual(provider.protocol, "openai_chat")
-            self.assertEqual(provider.base_url, "https://api.deepseek.com/v1")
+            self.assertEqual(model.model.default_value, "explicit-model")
+            self.assertEqual(provider.protocol.default_value, "openai_chat")
+            self.assertEqual(
+                provider.base_url.default_value, "https://api.deepseek.com/v1"
+            )
             self.assertIsNone(model.max_tokens)
 
     def test_native_profile_settings_are_preserved_without_mutating_presets(self):
         model = llm.ModelProfile(
-            model="custom",
-            supports_function_calling=True,
-            extra_body={"max_tokens": 12, "thinking": {"type": "enabled"}},
+            model=Attribute(default_value="custom"),
+            supports_function_calling=Config(default_value=True),
+            extra_body=Config(
+                default_value={"max_tokens": 12, "thinking": {"type": "enabled"}},
+            ),
         )
         preset = replace(
-            llm.PROVIDERS["deepseek"], models=[model], timeout=90, max_retries=1
+            llm.PROVIDERS["deepseek"],
+            models=Attribute(default_value=[model]),
+            timeout=Config(default_value=90),
+            max_retries=Config(default_value=1),
         )
         with (
             patch.dict(llm.PROVIDERS, {"deepseek": preset}),
             patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}, clear=True),
         ):
             provider, configured_model = llm.get_profiles("deepseek", "custom")
-            self.assertEqual(provider.timeout, 90)
-            self.assertEqual(provider.max_retries, 1)
+            self.assertEqual(provider.timeout.default_value, 90)
+            self.assertEqual(provider.max_retries.default_value, 1)
             self.assertIs(configured_model, model)
             self.assertEqual(
-                configured_model.extra_body,
+                configured_model.extra_body.default_value,
                 {"max_tokens": 12, "thinking": {"type": "enabled"}},
             )
             self.assertIsNone(configured_model.max_tokens)
@@ -507,7 +601,12 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigurationError, "未知供应商"):
             llm.get_provider("unknown")
         with patch.dict(
-            llm.PROVIDERS, {"kimi": replace(llm.PROVIDERS["kimi"], models=[])}
+            llm.PROVIDERS,
+            {
+                "kimi": replace(
+                    llm.PROVIDERS["kimi"], models=Attribute(default_value=[])
+                )
+            },
         ):
             with self.assertRaisesRegex(ConfigurationError, "/model"):
                 llm.get_model("kimi")

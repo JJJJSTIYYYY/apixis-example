@@ -1,137 +1,142 @@
-"""Native my-llm-py presets verified against official docs on 2026-10-16.
+"""Public MyLLM profiles; model catalogue verified on 2026-10-16.
 
-Sources and selection notes: docs/model-presets.md. The first model is the
-application default for each provider; explicit IDs remain accepted by /model.
+See docs/model-presets.md for sources. The first model is each provider's default.
 """
 
-from my_llm import ModelProfile, ProviderProfile, omit
+from my_llm import Attribute, Config, ModelProfile, Parameter, ProviderProfile, omit
 
 PRESETS_VERIFIED_ON = "2026-10-16"
 
 PROVIDERS: dict[str, ProviderProfile] = {
     "deepseek": ProviderProfile(
-        base_url="https://api.deepseek.com/v1",
-        supports_reasoning_effort=True,
-        reasoning_effort_mapping={"medium": "high", "xhigh": "high"},
-        replay_reasoning_content_when_tool_calls=True,
-        reasoning_enable_parameter={
-            "reasoning_effort": omit,
-            "extra_body": {"thinking": {"type": "enabled"}},
-        },
-        # Optional output budget belongs directly in ModelProfile.extra_body:
-        # extra_body={"max_tokens": 4096}. Omission keeps the service default.
-        models=[
-            ModelProfile(
-                model=model_id,
-                max_context_window=1_048_576,
-                supports_function_calling=True,
-                supports_reasoning=True,
-            )
-            for model_id in ("deepseek-flash", "deepseek-v4-pro")
-        ],
+        protocol=Config(default_value="openai_chat"),
+        base_url=Config(default_value="https://api.deepseek.com/v1"),
+        reasoning_effort=Parameter(path="$.reasoning_effort"),
+        reasoning_effort_mapping=Config(
+            default_value={"medium": "high", "xhigh": "high"}
+        ),
+        reasoning_enable=Parameter(
+            path="$.extra_body.thinking", default_value={"type": "enabled"}
+        ),
+        # Optional native output budgets go directly in ModelProfile.extra_body:
+        # Config(default_value={"max_tokens": 4096}).
+        models=Attribute(
+            default_value=[
+                ModelProfile(
+                    model=Attribute(default_value=model_id),
+                    max_context_window=Attribute(default_value=1_048_576),
+                    supports_function_calling=Config(default_value=True),
+                )
+                for model_id in ("deepseek-flash", "deepseek-v4-pro")
+            ]
+        ),
     ),
     "kimi": ProviderProfile(
-        base_url="https://api.moonshot.ai/v1",
-        replay_reasoning_content_when_tool_calls=True,
-        reasoning_enable_parameter={
-            "reasoning_effort": omit,
-            "extra_body": {"thinking": {"type": "enabled"}},
-        },
-        # Output budgets use ModelProfile.extra_body: max_completion_tokens
-        # for K3, max_tokens for K2.x. No application-side conversion.
-        models=[
-            ModelProfile(
-                model="kimi-k3",
-                max_context_window=1_000_000,
-                supports_function_calling=True,
-                supports_reasoning=True,
-                supports_reasoning_effort=True,
-                # K3 always thinks and rejects the old K2.x thinking switch.
-                reasoning_enable_parameter=omit,
-                reasoning_effort_mapping={"medium": None, "xhigh": None},
-            ),
-            *[
+        protocol=Config(default_value="openai_chat"),
+        base_url=Config(default_value="https://api.moonshot.ai/v1"),
+        reasoning_enable=Parameter(
+            path="$.extra_body.thinking", default_value={"type": "enabled"}
+        ),
+        # Native budget: max_completion_tokens for K3, max_tokens for K2.x.
+        models=Attribute(
+            default_value=[
                 ModelProfile(
-                    model=model_id,
-                    max_context_window=256_000,
-                    supports_function_calling=True,
-                    supports_reasoning=True,
-                    supports_reasoning_effort=False,
-                )
-                for model_id in (
-                    "kimi-k2.7-code",
-                    "kimi-k2.7-code-highspeed",
-                    "kimi-k2.6",
-                )
-            ],
-        ],
+                    model=Attribute(default_value="kimi-k3"),
+                    max_context_window=Attribute(default_value=1_000_000),
+                    supports_function_calling=Config(default_value=True),
+                    reasoning_effort=Parameter(path="$.reasoning_effort"),
+                    # K3 always thinks and rejects the old K2.x thinking switch.
+                    reasoning_enable=omit,
+                    reasoning_effort_mapping=Config(
+                        default_value={"medium": None, "xhigh": None}
+                    ),
+                ),
+                *[
+                    ModelProfile(
+                        model=Attribute(default_value=model_id),
+                        max_context_window=Attribute(default_value=256_000),
+                        supports_function_calling=Config(default_value=True),
+                        reasoning_effort=Parameter(
+                            path="$.reasoning_effort", supports=False
+                        ),
+                    )
+                    for model_id in (
+                        "kimi-k2.7-code",
+                        "kimi-k2.7-code-highspeed",
+                        "kimi-k2.6",
+                    )
+                ],
+            ]
+        ),
     ),
     "openai": ProviderProfile(
-        # Current Sol/Astra require Responses for function calling.
-        protocol="openai_responses",
-        models=[
-            ModelProfile(
-                model=model_id,
-                max_context_window=1_050_000,
-                supports_function_calling=True,
-                supports_reasoning=True,
-                supports_reasoning_effort=True,
-            )
-            for model_id in ("gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna")
-        ],
+        protocol=Config(default_value="openai_responses"),
+        models=Attribute(
+            default_value=[
+                ModelProfile(
+                    model=Attribute(default_value=model_id),
+                    max_context_window=Attribute(default_value=1_050_000),
+                    supports_function_calling=Config(default_value=True),
+                )
+                for model_id in ("gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna")
+            ]
+        ),
     ),
     "anthropic": ProviderProfile(
-        protocol="anthropic",
-        supports_reasoning_effort=True,
-        extra_body={"thinking": {"type": "adaptive"}},
-        reasoning_enable_parameter={"extra_body": {"thinking": {"type": "adaptive"}}},
-        models=[
-            ModelProfile(
-                model=model_id,
-                max_context_window=1_000_000,
-                max_tokens=4096,  # Application output budget, not the model limit.
-                supports_function_calling=True,
-                supports_reasoning=True,
-            )
-            for model_id in (
-                "claude-sonnet-5-5",
-                "claude-opus-5-5",
-                "claude-haiku-5-5",
-                "claude-fable-5-1",
-            )
-        ],
+        protocol=Config(default_value="anthropic"),
+        reasoning_effort=Parameter(path="$.output_config.effort"),
+        extra_body=Config(default_value={"thinking": {"type": "adaptive"}}),
+        reasoning_enable=Parameter(
+            path="$.thinking", default_value={"type": "adaptive"}
+        ),
+        models=Attribute(
+            default_value=[
+                ModelProfile(
+                    model=Attribute(default_value=model_id),
+                    max_context_window=Attribute(default_value=1_000_000),
+                    extra_body=Config(default_value={"max_tokens": 4096}),
+                    supports_function_calling=Config(default_value=True),
+                )
+                for model_id in (
+                    "claude-sonnet-5-5",
+                    "claude-opus-5-5",
+                    "claude-haiku-5-5",
+                    "claude-fable-5-1",
+                )
+            ]
+        ),
     ),
     "gemini": ProviderProfile(
-        protocol="gemini",
-        supports_reasoning_effort=True,
-        reasoning_enable_parameter=omit,
-        reasoning_effort_mapping={"xhigh": None, "max": None},
-        models=[
-            ModelProfile(
-                model=model_id,
-                max_context_window=1_048_576,
-                supports_function_calling=True,
-                supports_reasoning=True,
-            )
-            for model_id in ("gemini-3.8-flash", "gemini-3.5-flash-lite")
-        ],
+        protocol=Config(default_value="gemini"),
+        reasoning_effort=Parameter(path="$.config.thinking_config.thinking_level"),
+        reasoning_enable=omit,
+        reasoning_effort_mapping=Config(default_value={"xhigh": None, "max": None}),
+        models=Attribute(
+            default_value=[
+                ModelProfile(
+                    model=Attribute(default_value=model_id),
+                    max_context_window=Attribute(default_value=1_048_576),
+                    supports_function_calling=Config(default_value=True),
+                )
+                for model_id in ("gemini-3.8-flash", "gemini-3.5-flash-lite")
+            ]
+        ),
     ),
     "ollama": ProviderProfile(
-        protocol="ollama",
-        supports_reasoning_effort=False,
-        models=[
-            ModelProfile(
-                model=model_id,
-                max_context_window=256_000,
-                supports_function_calling=True,
-                supports_reasoning=True,
-            )
-            for model_id in ("qwen3.5:9b", "qwen3.6:27b", "qwen3.6:35b")
-        ],
+        protocol=Config(default_value="ollama"),
+        models=Attribute(
+            default_value=[
+                ModelProfile(
+                    model=Attribute(default_value=model_id),
+                    max_context_window=Attribute(default_value=256_000),
+                    supports_function_calling=Config(default_value=True),
+                )
+                for model_id in ("qwen3.5:9b", "qwen3.6:27b", "qwen3.6:35b")
+            ]
+        ),
     ),
 }
 
-# Credentials belong to the selected provider; other settings stay in Profiles.
 API_KEY_ENV: dict[str, tuple[str, ...]] = {
     "deepseek": ("DEEPSEEK_API_KEY",),
     "kimi": ("KIMI_API_KEY", "MOONSHOT_API_KEY"),

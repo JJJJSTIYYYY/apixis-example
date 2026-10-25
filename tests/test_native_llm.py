@@ -188,7 +188,7 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                                     [{"role": "user", "content": "hello"}],
                                     get_tools_schema(),
                                     provider=name,
-                                    model=model.model,
+                                    model=model.model.default_value,
                                 )
                             self.assertEqual(
                                 error.exception.details, {"reason": native_finish}
@@ -202,7 +202,7 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                                     [{"role": "user", "content": "hello"}],
                                     get_tools_schema(),
                                     provider=name,
-                                    model=model.model,
+                                    model=model.model.default_value,
                                 )
                             message = error.exception.partial_message
                         else:
@@ -210,7 +210,7 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                                 [{"role": "user", "content": "hello"}],
                                 get_tools_schema(),
                                 provider=name,
-                                model=model.model,
+                                model=model.model.default_value,
                             )
                     self.assertEqual(message["content"], "OK")
                     self.assertNotIn("finish_reason", message)
@@ -222,7 +222,7 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                     body = json.loads(requests[0].content)
                     if name == "anthropic":
                         self.assertEqual(body["max_tokens"], 4096)
-                        self.assertEqual(body["model"], model.model)
+                        self.assertEqual(body["model"], model.model.default_value)
                         self.assertEqual(body["thinking"], {"type": "adaptive"})
                         self.assertEqual(body["tools"][0]["name"], "run_command")
                     elif name == "gemini":
@@ -234,6 +234,10 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(body["tools"], get_tools_schema())
                     # Explicit reasoning must use the selected preset's native
                     # settings, including adaptive rather than legacy budgets.
+                    adapter = MyLLM(
+                        provider=provider, model=model, stdio_protocol="openai_chat"
+                    )
+                    self.addAsyncCleanup(adapter.aclose)
                     await adapter.generate(
                         messages=[{"role": "user", "content": "hello"}],
                         tools=get_tools_schema(),
@@ -300,7 +304,9 @@ class NativeLLMTests(unittest.IsolatedAsyncioTestCase):
                     tool = replay["messages"][-1]["content"][0]
                     self.assertEqual(tool["type"], "tool_result")
                     self.assertEqual(tool["tool_use_id"], call["id"])
-                    self.assertEqual(tool["content"], "persisted-result")
+                    self.assertEqual(
+                        tool["content"], [{"type": "text", "text": "persisted-result"}]
+                    )
                 elif name == "gemini":
                     tool = replay["contents"][-1]["parts"][0]["functionResponse"]
                     self.assertEqual(tool["name"], "run_command")

@@ -21,7 +21,7 @@
 
 ## 启动
 
-需要 uv，项目使用 Python 3.14 和 my-llm-py 1.0.1。uv 会根据 `.python-version` 准备解释器。
+需要 uv，项目使用 Python 3.14 和 my-llm-py 1.3.2（包含全部供应商 SDK）。uv 会根据 `.python-version` 准备解释器。
 
 ```bash
 uv sync --locked
@@ -137,9 +137,9 @@ uv run example --prompt '执行 printf hello，然后说明结果' --approve-too
 uv run example --prompt '你好' --max-steps 16
 ```
 
-单次模式也经过输入过滤和命令守卫。DeepSeek/Kimi 的输出预算直接配置在 `ModelProfile.extra_body`：DeepSeek 和 Kimi K2.x 使用 `{"max_tokens": 4096}`，Kimi K3 使用 `{"max_completion_tokens": 4096}`；其他协议使用库的 `ModelProfile.max_tokens`。未显式配置时沿用现有默认值。
+单次模式也经过输入过滤和命令守卫。DeepSeek/Kimi 的输出预算直接配置在 `ModelProfile.extra_body`：DeepSeek 和 Kimi K2.x 使用 `{"max_tokens": 4096}`，Kimi K3 使用 `{"max_completion_tokens": 4096}`；1.3.2 中使用 `Config(default_value={...})` 包装 `extra_body`，Anthropic 也直接在其中配置 `max_tokens`。未显式配置时沿用现有默认值。
 
-应用以标准 `openai_chat` 格式调用 my-llm-py 1.0，上游协议转换、工具参数组装与完整消息收集交给库。完成原因读取流事件的 `choices[*].finish_reason`，最终消息直接使用 `stream.result`。遇到 `length` 或库的 Responses incomplete/failed 异常时保留失败快照供 `/retry`，截断回复不写入历史；完成原因和用量不额外写入历史消息。
+应用以标准 `openai_chat` 格式调用 my-llm-py 1.3.2，上游协议转换、工具参数组装与完整消息收集交给库。完成原因读取流事件的 `choices[*].finish_reason`，最终消息直接使用 `stream.result`。遇到 `length` 或库的 Responses incomplete/failed 异常时保留失败快照供 `/retry`，截断回复不写入历史；完成原因和用量不额外写入历史消息。1.3.2 的用量通过成功消费后的 `get_last_usage()` 获取，公开流事件不再包含 usage。跨协议无法表达历史内容时，沿用库默认的 `SemanticLossError`，保留对话和快照，提示切回兼容供应商后重试。
 
 ## 结构
 

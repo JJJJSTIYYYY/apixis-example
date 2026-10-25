@@ -37,7 +37,8 @@ def handle_model_selection(ui: AgentUI, runtime: AgentRuntime, command: str) -> 
                 ui.notice("当前：" + llm.model_label(runtime.provider, runtime.model))
                 models = llm.get_provider(runtime.provider).list_models()
                 ui.notice(
-                    "预设模型：" + ", ".join(model.model for model in models)
+                    "预设模型："
+                    + ", ".join(model.model.default_value for model in models)
                     if models
                     else "当前供应商没有预设模型。"
                 )

@@ -21,12 +21,14 @@ from apixis import (
     subscribe,
     unsubscribe,
 )
+from my_llm import Attribute, Config, SemanticLossError
 from openai import BadRequestError
 from sdk_transport import sdk_transport
 
 from example.app import chat_loop, run_prompt
 from example.core import agent, history, llm, settings, tools, workspace
 from example.core.runtime import AgentRuntime, shutdown_core
+from example.ui.errors import explain_error
 
 MESSAGES = [
     {"role": "system", "content": "Test agent"},
@@ -409,15 +411,77 @@ class AgentTests(SharedLoopTests):
     async def test_tool_snapshot_survives_sdk_400_and_provider_switch(self):
         await self.exercise_reasoning_switch(reject_once=True)
 
+    async def test_semantic_loss_keeps_history_and_can_retry_with_compatible_provider(
+        self,
+    ):
+        messages = MESSAGES + [
+            {
+                "role": "assistant",
+                "content": "previous answer",
+                "reasoning_content": "PRIVATE_REASONING",
+            },
+            {"role": "user", "content": "continue"},
+        ]
+        requests = []
+
+        def handle(request):
+            requests.append(json.loads(request.content))
+            event = {
+                "id": "chat_recovery",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "recovered"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n",
+                headers={"Content-Type": "text/event-stream"},
+            )
+
+        with (
+            patch.dict(os.environ, {"LLM_API_KEY": "local-test-only"}, clear=True),
+            sdk_transport(handle),
+        ):
+            runtime = self.runtime(provider="anthropic")
+            with self.assertRaises(SemanticLossError) as failure:
+                await collect(runtime, messages)
+            self.assertFalse(requests)
+            old = runtime.last_context
+            self.assertEqual(old.status, "failed")
+            self.assertEqual(old.state["messages"], messages)
+            title, hint = explain_error(failure.exception, can_retry=True)
+            self.assertIn("协议", title)
+            self.assertIn("/retry", hint)
+            self.assertNotIn("PRIVATE_REASONING", title + hint)
+            runtime.select_model("deepseek")
+            self.assertIs(runtime.last_context, old)
+            await collect(runtime, context=runtime.retry_context())
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(runtime.last_context.state["messages"][:-1], messages)
+        self.assertEqual(
+            runtime.last_context.state["messages"][-1]["content"], "recovered"
+        )
+
     async def exercise_reasoning_switch(self, *, reject_once):
         """Use SDK transport to verify the fixed replay and recover other 400s."""
         requests = []
         presets = dict(llm.PROVIDERS)
         selected = replace(
             llm.get_model("deepseek"),
-            extra_body={"max_tokens": 128, "thinking": {"type": "disabled"}},
+            extra_body=Config(
+                default_value={"max_tokens": 128, "thinking": {"type": "disabled"}},
+            ),
         )
-        presets["deepseek"] = replace(presets["deepseek"], models=[selected])
+        presets["deepseek"] = replace(
+            presets["deepseek"], models=Attribute(default_value=[selected])
+        )
 
         def handle(request):
             body = json.loads(request.content)
@@ -484,10 +548,17 @@ class AgentTests(SharedLoopTests):
                 self.assertFalse(old.state["messages"][-2].get("reasoning_content"))
                 enabled = replace(
                     selected,
-                    extra_body={"max_tokens": 128, "thinking": {"type": "enabled"}},
+                    extra_body=Config(
+                        default_value={
+                            "max_tokens": 128,
+                            "thinking": {"type": "enabled"},
+                        },
+                    ),
                 )
-                presets["deepseek"] = replace(presets["deepseek"], models=[enabled])
-                runtime.select_model("deepseek", selected.model)
+                presets["deepseek"] = replace(
+                    presets["deepseek"], models=Attribute(default_value=[enabled])
+                )
+                runtime.select_model("deepseek", selected.model.default_value)
                 self.assertIs(runtime.last_context, old)
                 if reject_once:
                     with self.assertRaises(BadRequestError) as failure:

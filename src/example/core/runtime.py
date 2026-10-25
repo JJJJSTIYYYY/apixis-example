@@ -75,7 +75,7 @@ class AgentRuntime:
         """Change the next LLM call, including retries, without changing graph state."""
         preset = llm.get_provider(provider)
         if model is not None or preset.list_models():
-            model = llm.get_model(provider, model).model
+            model = llm.get_model(provider, model).model.default_value
         self.provider = provider
         self.model = model
 

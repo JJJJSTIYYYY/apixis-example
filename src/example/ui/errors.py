@@ -8,6 +8,7 @@ from my_llm import (
     ConfigurationError,
     IncompleteStreamError,
     ResponseIncompleteError,
+    SemanticLossError,
     StreamError,
 )
 from ollama import ResponseError as OllamaResponseError
@@ -69,6 +70,12 @@ def explain_error(error: Exception, *, can_retry: bool = False) -> tuple[str, st
         return (
             "无法连接模型服务。",
             "请检查网络、代理与当前 ProviderProfile.base_url。" + retry,
+        )
+    if isinstance(error, SemanticLossError):
+        return (
+            "当前供应商协议无法完整表达这段对话的部分内容。",
+            "对话和重试状态已保留；请切回兼容的供应商或模型后重试，或用 /new 开始新对话。"
+            + (retry if can_retry else ""),
         )
     if isinstance(error, ConfigurationError):
         return "模型配置无效。", plain_text(error)
