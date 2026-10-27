@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "apixis>=1.1.1",
+    "apixis>=1.1.5",
     "my-llm-py[all]>=1.3.2",
     "rich>=15.0.0",
 ]

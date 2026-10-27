@@ -22,6 +22,8 @@ from apixis import (
 
 from .tools import execute_tool
 
+TOOL_REPLY_TIMEOUT = 40
+
 
 class AgentEvents:
     """Own a request handler and a wildcard observer in one private namespace."""
@@ -72,7 +74,7 @@ class AgentEvents:
         another run's result.
         """
         reply = f"{self.prefix}.tool.result.{uuid4().hex}"
-        async with wait_for_event(reply, point="processed", time_out=40) as waiter:
+        async with wait_for_event(reply, point="processed") as waiter:
             await get_event_pipe().post_event(
                 event_type=EventType.WORKFLOW,
                 event_name=f"{self.prefix}.tool.request",
@@ -84,7 +86,7 @@ class AgentEvents:
                     "graph_context": get_graph_context(),
                 },
             )
-            event = await waiter.wait()
+            event = await waiter.wait(time_out=TOOL_REPLY_TIMEOUT)
             return event.context["result"]
 
     async def _execute_request(self, event) -> None:

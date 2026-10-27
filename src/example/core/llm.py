@@ -16,6 +16,7 @@ from my_llm import (
     Parameter,
     ProviderProfile,
     StreamError,
+    Usage,
 )
 
 from .providers import API_KEY_ENV, PROVIDERS
@@ -108,10 +109,11 @@ async def stream_reply(
     tools: list[dict[str, Any]] | None = None,
     on_text: Callable[[str], None] | None = None,
     *,
+    on_usage: Callable[[Usage], None] | None = None,
     provider: str = "deepseek",
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Pass complete history unchanged; the library handles protocol compatibility."""
+    """Stream complete history and report usage separately after a successful reply."""
     async with create_llm(provider, model) as adapter:
         stream = await adapter.generate(messages=messages, tools=tools, stream=True)
         truncated = False
@@ -128,4 +130,6 @@ async def stream_reply(
                 "回复达到输出长度上限；请调整当前模型 Profile 的输出预算。",
                 partial_message=stream.result,
             )
+        if on_usage is not None and (usage := adapter.get_last_usage()) is not None:
+            on_usage(usage)
         return stream.result

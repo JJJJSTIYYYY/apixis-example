@@ -63,3 +63,5 @@ DeepSeek、OpenAI、Gemini 页面提供的精确数值直接记录；Kimi、Clau
 模型 ID、上下文窗口和目录分别使用 Attribute；协议和 extra_body 使用 Config；
 推理开关、强度与能力使用 Parameter.path/supports。name/source 由 Profile 绑定。
 跨协议无法表达的历史内容默认抛 SemanticLossError，不会因切换自动清空历史或修补签名。
+
+返回[文档索引](../README.md)。

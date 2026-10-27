@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
-from typing import Any
+from typing import Any, TypedDict
 
-from apixis import Block, GraphContext, get_event_loop, get_event_pipe
+from apixis import (
+    Block,
+    GraphContext,
+    get_event_loop,
+    get_event_pipe,
+    get_stream_writer,
+)
+from my_llm import Usage
 
 from ..plugins import (
     check_tool_call_command_guard,
@@ -20,14 +28,21 @@ from .events import AgentEvents
 from .workspace import build_workspace_graph
 
 
+class UsageRecord(TypedDict):
+    provider: str
+    model: str | None
+    usage: Usage
+
+
 class AgentRuntime:
     """Own only session resources; the CLI owns the process-global event core."""
 
     def __init__(
         self,
-        approve: Callable[[dict], Awaitable[bool]],
+        approve: Callable[[dict], Awaitable[bool]] | None = None,
         *,
         max_steps: int = 32,
+        max_snapshots: int = 16,
         provider: str = "deepseek",
         model: str | None = None,
     ) -> None:
@@ -37,14 +52,20 @@ class AgentRuntime:
             or max_steps <= 0
         ):
             raise ValueError("max_steps must be a positive integer")
+        if (
+            isinstance(max_snapshots, bool)
+            or not isinstance(max_snapshots, int)
+            or max_snapshots <= 0
+        ):
+            raise ValueError("max_snapshots must be a positive integer")
         self.provider = provider
         self.model: str | None = None
         self.select_model(provider, model)
         self.workspace_graph = build_workspace_graph()
         self.graph = agent.build_agent(
             self.workspace_graph, self._execute_tool, generate=self._generate
-        ).compile_graph("prepare")
-        self.graph.set_max_steps(max_steps)
+        ).compile_graph("prepare", max_steps=max_steps, max_snapshots=max_snapshots)
+        self.usage: deque[UsageRecord] = deque(maxlen=20)
         self.events = AgentEvents(self.graph.namespace)
         self.last_context: GraphContext | None = None
         self._filter = None
@@ -61,11 +82,16 @@ class AgentRuntime:
                 if guard is not None and not guard.ok:
                     block.with_data["rejection_reason"] = guard.message
                     block.resolve(False)
+                elif approve is None:
+                    # Hand the existing interruption to the stream consumer;
+                    # Apixis cancels it automatically when this run ends.
+                    block.accept()
+                    block.with_data["stream_writer"](
+                        {"type": "approval", "tool_call": call, "block": block}
+                    )
                 else:
                     block.resolve(bool(await approve(call)))
 
-            # Handler names are process-global even when event namespaces differ.
-            approve_tool.__name__ = f"{self.graph.namespace}.approve_tool"
             self.graph.add_interrupted_hook(approve_tool)
         except BaseException:
             self.close()
@@ -80,8 +106,21 @@ class AgentRuntime:
         self.model = model
 
     async def _generate(self, messages, tools, on_text) -> dict:
+        provider, model = self.provider, self.model
+        writer = get_stream_writer()
+
+        def record_usage(usage: Usage) -> None:
+            record = UsageRecord(provider=provider, model=model, usage=usage)
+            self.usage.append(record)
+            writer({"type": "usage", **record})
+
         return await agent.stream_reply(
-            messages, tools, on_text, provider=self.provider, model=self.model
+            messages,
+            tools,
+            on_text,
+            provider=provider,
+            model=model,
+            on_usage=record_usage,
         )
 
     async def _execute_tool(self, call: dict) -> str:

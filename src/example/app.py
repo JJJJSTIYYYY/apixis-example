@@ -6,11 +6,11 @@ plugin registration logic in the conversation loop.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import aclosing
 from pathlib import Path
 
 from rich.table import Table
+from rich.text import Text
 
 from . import commands
 from .core import history, llm, settings
@@ -45,10 +45,14 @@ def show_checkpoints(runtime: AgentRuntime) -> None:
         "failed": "未完成",
         "aborted": "已停止",
     }
-    table = Table(title="最近运行：" + statuses.get(context.status, context.status))
+    snapshots = context.get_all_snapshots()
+    table = Table(
+        title="最近运行：" + statuses.get(context.status, context.status),
+        caption=f"保留最近 {len(snapshots)}/{context.max_snapshots} 个快照；版本为当前保留范围内的索引。",
+    )
     for name in ("版本", "步数", "恢复目标", "消息数"):
         table.add_column(name)
-    for version, snapshot in enumerate(context.get_all_snapshots()):
+    for version, snapshot in enumerate(snapshots):
         table.add_row(
             str(version),
             str(snapshot["steps"]),
@@ -59,6 +63,28 @@ def show_checkpoints(runtime: AgentRuntime) -> None:
                 "tools": "执行工具",
             }.get(str(snapshot["target_node_name"]), str(snapshot["target_node_name"])),
             str(len(snapshot["state"].get("messages", []))),
+        )
+    console.print(table)
+
+
+def show_usage(ui: AgentUI, runtime: AgentRuntime) -> None:
+    if not runtime.usage:
+        ui.notice("还没有已报告用量的完成请求。")
+        return
+    table = Table(
+        title="最近完成请求的 token 用量",
+        caption="最多保留 20 次；— 表示未报告。缓存和推理是子项，不额外相加；失败请求可能仍产生费用。",
+    )
+    for name in ("供应商 / 模型", "输入", "输出", "总计", "缓存", "推理"):
+        table.add_column(name)
+    for record in runtime.usage:
+        usage = record["usage"]
+        table.add_row(
+            Text(llm.model_label(record["provider"], record["model"])),
+            *(
+                "—" if (value := getattr(usage, field)) is None else str(value)
+                for field in ("input", "output", "total", "cached", "reasoning")
+            ),
         )
     console.print(table)
 
@@ -88,17 +114,21 @@ async def render_chunk(ui: AgentUI, chunk) -> None:
         return
     kind = chunk.get("type")
     if kind == "approval":
-        decision = chunk["decision"]
+        block = chunk["block"]
+        if block.done:
+            return
         call = chunk["tool_call"]
         try:
             approved = await ui.confirm_command(
                 call["function"]["arguments"], name=call["function"]["name"]
             )
-        except BaseException:
-            decision.cancel()
+        except Exception as exc:
+            block.fail(exc)
             raise
-        if not decision.done():
-            decision.set_result(approved)
+        except BaseException:
+            block.cancel()
+            raise
+        block.resolve(bool(approved))
     elif kind == "content":
         ui.content(chunk["text"])
     elif kind == "error":
@@ -115,7 +145,9 @@ async def render_chunk(ui: AgentUI, chunk) -> None:
         )
 
 
-async def chat_loop(*, provider: str = "deepseek", model: str | None = None) -> None:
+async def chat_loop(
+    *, provider: str = "deepseek", model: str | None = None, max_snapshots: int = 16
+) -> None:
     """Run the interactive chat loop; only completed turns enter history."""
     llm.get_provider(provider)
     if model is not None:
@@ -131,16 +163,7 @@ async def chat_loop(*, provider: str = "deepseek", model: str | None = None) -> 
             return
     ui.username = username
 
-    async def approve(call: dict) -> bool:
-        # Route approval through the same stream consumer as all other UI output.
-        # Event hooks must not print prompts ahead of queued text or tool results.
-        decision = asyncio.get_running_loop().create_future()
-        runtime.last_context.stream_writer(
-            {"type": "approval", "tool_call": call, "decision": decision}
-        )
-        return await decision
-
-    runtime = AgentRuntime(approve, provider=provider, model=model)
+    runtime = AgentRuntime(provider=provider, model=model, max_snapshots=max_snapshots)
     ui.banner(llm.model_label(runtime.provider, runtime.model))
     # Start a new conversation by default; /history resumes a saved one.
     current_conversation: history.Conversation | None = None
@@ -181,6 +204,7 @@ async def chat_loop(*, provider: str = "deepseek", model: str | None = None) -> 
                 pending_input = None
                 runtime.clear_attempt()
                 runtime.events.counts.clear()
+                runtime.usage.clear()
                 ui.clear_output()
                 ui.set_conversation(None)
                 ui.username = "你"
@@ -204,6 +228,9 @@ async def chat_loop(*, provider: str = "deepseek", model: str | None = None) -> 
                 continue
             if user_input == "/stats":
                 show_stats(runtime)
+                continue
+            if user_input == "/usage":
+                show_usage(ui, runtime)
                 continue
             if user_input == "/history":
                 picked_id, loaded = commands.handle_history(ui, username)
@@ -320,6 +347,7 @@ async def run_prompt(
     *,
     approve_tools: bool = False,
     max_steps: int = 32,
+    max_snapshots: int = 16,
     provider: str = "deepseek",
     model: str | None = None,
 ) -> None:
@@ -328,7 +356,13 @@ async def run_prompt(
     async def approve(call: dict) -> bool:
         return approve_tools
 
-    runtime = AgentRuntime(approve, max_steps=max_steps, provider=provider, model=model)
+    runtime = AgentRuntime(
+        approve,
+        max_steps=max_steps,
+        max_snapshots=max_snapshots,
+        provider=provider,
+        model=model,
+    )
     stream_error = None
     try:
         async with aclosing(

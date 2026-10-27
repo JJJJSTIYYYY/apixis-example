@@ -21,7 +21,7 @@
 
 ## 启动
 
-需要 uv，项目使用 Python 3.14 和 my-llm-py 1.3.2（包含全部供应商 SDK）。uv 会根据 `.python-version` 准备解释器。
+需要 uv，项目使用 Python 3.14、Apixis 1.1.5 和 my-llm-py 1.3.2（包含全部供应商 SDK）。uv 会根据 `.python-version` 准备解释器。
 
 ```bash
 uv sync --locked
@@ -36,12 +36,13 @@ uv run example
 ```text
 /provider                         查看当前供应商与可用供应商
 /provider kimi                    切换到 Kimi
+/provider kimi-cn                 切换到 Kimi 中国站
 /model kimi-k2.7-code             切换到预设模型
 /provider openai gpt-6.1-sol        同时选择供应商和模型
 /model                            查看当前模型与预设模型
 ```
 
-预设已按 2026-10-16 的官方文档核查，包含六个供应商的 18 个模型，详见 [预设及来源](docs/model-presets.md)。也可输入账户可用的其他模型 ID。切换后立即使用新选择，
+预设已按 2026-10-16 的官方文档核查，包含六个供应商的 18 个模型，详见 [预设及来源](docs/guides/model-presets.md)。也可输入账户可用的其他模型 ID。切换后立即使用新选择，
 完整保留当前对话、工具结果、最近工具输出和失败快照；`/retry` 使用新选择恢复旧快照。
 跨供应商、跨 API 的消息转换交给 my-llm-py，转换失败时显示错误并保留状态。
 
@@ -58,18 +59,20 @@ API Key 从环境变量读取，选择供应商和模型不需要凭证；实际
 | --- | --- | --- |
 | `deepseek` | OpenAI Chat Completions | `DEEPSEEK_API_KEY` |
 | `kimi` | OpenAI Chat Completions | `KIMI_API_KEY` 或 `MOONSHOT_API_KEY` |
+| `kimi-cn` | 同一 Kimi 模型目录，中国站连接 | `KIMI_API_KEY` 或 `MOONSHOT_API_KEY` |
 | `openai` | OpenAI Responses | `OPENAI_API_KEY` |
 | `anthropic` | Anthropic 原生 | `ANTHROPIC_API_KEY` |
 | `gemini` | Gemini 原生 | `GEMINI_API_KEY` 或 `GOOGLE_API_KEY` |
 | `ollama` | Ollama 原生 | 无需凭证 |
 
 `LLM_API_KEY` 可作为通用凭证；优先使用当前供应商专属的凭证变量。
+`kimi` 使用国际站 `api.moonshot.ai`，`kimi-cn` 使用中国站 `api.moonshot.cn`，请按密钥所属站点选择；应用不会自动向另一站重发。
 `EXAMPLE_HOME` 仍控制设置和历史保存目录（默认 `~/.example`）。
 模型调用的配置不再读取 `LLM_PROVIDER`、`LLM_MODEL`、API 地址或 token 上限等环境变量。
 地址、API 类型、输出上限和能力差异直接在 `core/providers.py` 使用库原生的
-`ProviderProfile`、`ModelProfile` 声明，见 [my-llm-py 接入说明](docs/my-llm-coverage.md)。
+`ProviderProfile`、`ModelProfile` 声明，见 [my-llm-py 接入说明](docs/guides/my-llm-coverage.md)。
 
-项目目录里的 `config.yaml` 控制 Apixis 日志。Apixis 从**运行命令时的工作目录**加载该文件。可添加 `PIPELINE.event_loop_backpressure` 和 `PIPELINE.event_pipe_max_len` 调整容量；Apixis 1.1.0 的背压下限为 128。
+项目目录里的 `config.yaml` 使用 `LOG.show_event_dispatch` 控制额外的事件分发输出；1.1.5 已移除旧的 `debug_level`、`trace` 日志配置。Apixis 从**运行命令时的工作目录**加载该文件。可添加 `PIPELINE.event_loop_backpressure` 和 `PIPELINE.event_pipe_max_len` 调整容量，背压下限为 128。
 
 ## 使用
 
@@ -88,6 +91,7 @@ API Key 从环境变量读取，选择供应商和模型不需要凭证；实际
 | `/new` | 开始新对话，清除当前重试记录 |
 | `/rename`、`/delete` | 重命名或删除当前对话 |
 | `/output` | 查看最近一次工具的完整输出 |
+| `/usage` | 查看当前用户会话最近 20 次完成请求的 token 用量 |
 | `/transcript` | 查看当前对话的完整记录 |
 | `/retry` | 从最近一次失败运行的最新快照恢复 |
 | `/logout` | 退出当前用户，清空当前对话和重试状态，重新询问用户名 |
@@ -103,13 +107,19 @@ API Key 从环境变量读取，选择供应商和模型不需要凭证；实际
 | `/checkpoints` | 查看最近运行的状态、快照版本和恢复目标 |
 | `/stats` | 查看当前会话的运行事件和工具事件计数 |
 
-每轮开始时，工作目录子图并发采集少量目录名称与运行环境，再合并为临时上下文。不会读取文件内容或环境变量，也不会额外请求 LLM。临时环境信息不写入对话历史。
+每轮开始时，工作目录子图并发采集少量目录名称与运行环境，再合并为临时上下文。不会读取文件内容或环境变量，也不会额外请求 LLM。临时环境信息不写入对话历史，子图使用 `no_snapshot=True`。
+
+工具审批通过 Apixis 的 `Block.accept()` 延后到流消费者处理；批准或拒绝调用 `resolve()`，界面错误调用 `fail()`，取消调用 `cancel()`。审批与发起它的运行关联，关闭流或中止运行时由 Apixis 清理，无需另建 Future。
+
+`/usage` 使用 my-llm-py 的 `get_last_usage()`，通过 Apixis 流传递独立用量事件，包含输入、输出、总计、缓存与推理 token。一次工具回合可能包含多次模型请求；未报告的字段显示 `—`。记录不进入对话、SQLite 或快照，退出当前用户时清空。失败或截断请求不计入完成记录，记录也不代表完整账单。
 
 工具以独立事件请求执行，通过唯一回复事件等待结果。审批不设超时；shell 命令执行上限为 30 秒，事件结果等待上限为 40 秒，LLM 节点上限为 130 秒。主图默认最多 32 个节点步骤，每执行一个工具占用一个步骤。
 
 ### 快照与重试
 
 快照由 Apixis 在节点执行前自动保存。`/retry` 恢复的是新 context，不会重新使用已经消耗的失败 context。
+
+默认只保留最近 16 个快照，使用 `--max-snapshots N` 调整交互和单次模式的保留条数。`/checkpoints` 显示当前条数与上限，版本索引指当前保留范围；裁剪旧快照不改变最新快照中的完整状态。
 
 - 工具结果已提交、后续 LLM 请求失败：恢复到 LLM 节点，已提交的工具不会重跑。
 - 工具节点自身失败：恢复可能重新执行该工具，仍需再次审批。节点快照不保证外部命令的 exactly-once 执行。
@@ -135,11 +145,14 @@ uv run example --prompt '执行 printf hello，然后说明结果' --approve-too
 
 # Adjust the step budget for one-shot mode.
 uv run example --prompt '你好' --max-steps 16
+
+# Keep only the latest four checkpoints per attempt.
+uv run example --max-snapshots 4
 ```
 
 单次模式也经过输入过滤和命令守卫。DeepSeek/Kimi 的输出预算直接配置在 `ModelProfile.extra_body`：DeepSeek 和 Kimi K2.x 使用 `{"max_tokens": 4096}`，Kimi K3 使用 `{"max_completion_tokens": 4096}`；1.3.2 中使用 `Config(default_value={...})` 包装 `extra_body`，Anthropic 也直接在其中配置 `max_tokens`。未显式配置时沿用现有默认值。
 
-应用以标准 `openai_chat` 格式调用 my-llm-py 1.3.2，上游协议转换、工具参数组装与完整消息收集交给库。完成原因读取流事件的 `choices[*].finish_reason`，最终消息直接使用 `stream.result`。遇到 `length` 或库的 Responses incomplete/failed 异常时保留失败快照供 `/retry`，截断回复不写入历史；完成原因和用量不额外写入历史消息。1.3.2 的用量通过成功消费后的 `get_last_usage()` 获取，公开流事件不再包含 usage。跨协议无法表达历史内容时，沿用库默认的 `SemanticLossError`，保留对话和快照，提示切回兼容供应商后重试。
+应用以标准 `openai_chat` 格式调用 my-llm-py 1.3.2，上游协议转换、工具参数组装与完整消息收集交给库。完成原因读取流事件的 `choices[*].finish_reason`，最终消息直接使用 `stream.result`。遇到 `length` 或库的 Responses incomplete/failed 异常时保留失败快照供 `/retry`，截断回复不写入历史；完成原因和用量不额外写入历史消息。1.3.2 的用量通过成功消费后的 `get_last_usage()` 获取，供应商公开流事件不再包含 usage；应用另行发送展示用量的图流事件。跨协议无法表达历史内容时，沿用库默认的 `SemanticLossError`，保留对话和快照，提示切回兼容供应商后重试。
 
 ## 结构
 
@@ -164,7 +177,7 @@ src/example/
 
 所有工具由应用提供，未启用 Provider 原生搜索或工具。输入过滤和命令守卫是简单模式检查，示例没有实现 shell 沙箱；交互模式保留逐次审批。工具完整输出交给模型，终端折叠显示并可查看全文。
 
-详细的接口覆盖与取舍见 [docs/apixis-coverage.md](docs/apixis-coverage.md)。界面检查与改进见 [docs/ui-review.md](docs/ui-review.md)，验证结果见 [docs/validation.md](docs/validation.md)。
+完整文档见 [文档索引](docs/README.md)，接口覆盖与取舍见 [Apixis 接口覆盖](docs/guides/apixis-coverage.md)，测试方法和结果见 [验证说明](docs/validation.md)。
 
 ## 本地测试
 
@@ -173,3 +186,6 @@ uv run python -m unittest discover -s tests -v
 ```
 
 测试不需要 API Key，也不会访问付费接口。覆盖真实 Apixis 图与事件流程、审批顺序、异常、恢复、中止、my-llm-py 与官方 SDK 的模拟传输、完整 Chat 消息与旧历史保存，以及窄窗口、长输出和历史交互；另在独立进程中验证背压 128、队列 8 下的 160 路并发。
+
+可选的付费验证：`uv run python tests/scenarios/live_upgrade.py`，按隐藏提示输入 DeepSeek 和 Moonshot 密钥。每家最多两次模型请求，仅允许固定的 `printf APIXIS_UPGRADE_OK` 工具命令；验证延迟审批、工具后失败恢复、快照裁剪和用量。密钥只存在进程内存，脚本不保存设置、对话或日志。测试方法与覆盖范围见 [验证说明](docs/validation.md)。
+中国站 Moonshot 密钥需加 `--kimi-region cn`；用 `--provider kimi` 可单独验证 Kimi。

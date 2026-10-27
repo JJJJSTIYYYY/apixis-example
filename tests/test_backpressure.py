@@ -12,7 +12,7 @@ class BackpressureTests(unittest.TestCase):
         script = Path(__file__).parent / "scenarios" / "saturation.py"
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "config.yaml").write_text(
-                "LOG:\n  debug_level: ERROR\n  trace: false\n  show_event_dispatch: false\n"
+                "LOG:\n  show_event_dispatch: false\n"
                 "PIPELINE:\n  event_loop_backpressure: 128\n  event_pipe_max_len: 8\n",
             )
             result = subprocess.run(

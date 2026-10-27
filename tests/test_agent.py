@@ -1,6 +1,7 @@
 """Exercise real Apixis graphs and events with deterministic, free LLM stubs."""
 
 import asyncio
+import atexit
 import inspect
 import json
 import os
@@ -25,7 +26,7 @@ from my_llm import Attribute, Config, SemanticLossError
 from openai import BadRequestError
 from sdk_transport import sdk_transport
 
-from example.app import chat_loop, run_prompt
+from example.app import chat_loop, render_chunk, run_prompt
 from example.core import agent, history, llm, settings, tools, workspace
 from example.core.runtime import AgentRuntime, shutdown_core
 from example.ui.errors import explain_error
@@ -34,6 +35,9 @@ MESSAGES = [
     {"role": "system", "content": "Test agent"},
     {"role": "user", "content": "hello"},
 ]
+
+_TEST_RUNNER = asyncio.Runner()
+atexit.register(_TEST_RUNNER.close)
 
 
 def tool_call(call_id="call-1", command="printf apixis"):
@@ -61,13 +65,7 @@ async def collect(runtime, messages=MESSAGES, *, context=None):
 class SharedLoopTests(unittest.TestCase):
     """A process-global Apixis core lives on one event loop, as in the CLI."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.runner = asyncio.Runner()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.runner.close()
+    runner = _TEST_RUNNER
 
     def __init_subclass__(cls):
         super().__init_subclass__()
@@ -138,7 +136,7 @@ class AgentTests(SharedLoopTests):
             runtimes.append(runtime)
             return runtime
 
-        async def reply(messages, tools, on_text, **selection):
+        async def reply(messages, tools, on_text, *, on_usage=None, **selection):
             from copy import deepcopy
 
             calls.append((selection, deepcopy(messages)))
@@ -605,6 +603,163 @@ class AgentTests(SharedLoopTests):
             else:
                 self.assertIn("rejected", result["error"])
 
+    async def test_deferred_guard_rejection_does_not_request_approval(self):
+        runtime = self.runtime(None)
+        replies = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call(command="rm -rf /tmp/test")],
+            },
+            {"role": "assistant", "content": "rejected"},
+        ]
+        execute = AsyncMock()
+        with (
+            patch.object(agent, "stream_reply", AsyncMock(side_effect=replies)),
+            patch("example.core.events.execute_tool", execute),
+        ):
+            chunks = await asyncio.wait_for(collect(runtime), 3)
+        self.assertFalse(any(chunk["type"] == "approval" for chunk in chunks))
+        execute.assert_not_awaited()
+        self.assertIn("安全策略", runtime.last_context.state["messages"][-2]["content"])
+
+    async def test_pending_deferred_approval_is_cancelled_with_its_run(self):
+        for action in ("abort", "close", "cancel"):
+            with self.subTest(action=action):
+                runtime = self.runtime(None)
+                execute = AsyncMock()
+                reply = AsyncMock(
+                    return_value={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [tool_call()],
+                    }
+                )
+                with (
+                    patch.object(agent, "stream_reply", reply),
+                    patch("example.core.events.execute_tool", execute),
+                ):
+                    async with aclosing(runtime.stream(MESSAGES)) as stream:
+                        async for chunk in stream:
+                            if chunk["type"] == "approval":
+                                break
+                        block = chunk["block"]
+                        self.assertTrue(block.accepted)
+                        self.assertFalse(block.done)
+                        if action == "abort":
+                            await runtime.abort()
+                        elif action == "close":
+                            await stream.aclose()
+                        else:
+                            block.cancel()
+                        await asyncio.wait_for(self.consume_remaining_stream(stream), 2)
+                    await asyncio.wait_for(get_event_pipe().join(), 2)
+                self.assertTrue(block.cancelled)
+                self.assertEqual(runtime.last_context.status, "aborted")
+                execute.assert_not_awaited()
+                # An approval already revoked by its run must not prompt again.
+                ui = unittest.mock.Mock()
+                ui.confirm_command = AsyncMock()
+                await render_chunk(ui, chunk)
+                ui.confirm_command.assert_not_awaited()
+
+    @staticmethod
+    async def consume_remaining_stream(stream):
+        return [chunk async for chunk in stream]
+
+    async def test_deferred_approval_ui_failure_or_cancellation_reaches_the_run(self):
+        for error in (RuntimeError("approval unavailable"), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                runtime = self.runtime(None)
+                execute = AsyncMock()
+                with (
+                    patch.object(
+                        agent,
+                        "stream_reply",
+                        AsyncMock(
+                            return_value={
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [tool_call()],
+                            }
+                        ),
+                    ),
+                    patch("example.core.events.execute_tool", execute),
+                ):
+                    async with aclosing(runtime.stream(MESSAGES)) as stream:
+                        async for chunk in stream:
+                            if chunk["type"] == "approval":
+                                break
+                        block = chunk["block"]
+                        ui = unittest.mock.Mock()
+                        ui.confirm_command = AsyncMock(side_effect=error)
+                        with self.assertRaises(type(error)):
+                            await render_chunk(ui, chunk)
+                        if isinstance(error, Exception):
+                            with self.assertRaisesRegex(
+                                RuntimeError, "approval unavailable"
+                            ):
+                                await asyncio.wait_for(
+                                    self.consume_remaining_stream(stream), 2
+                                )
+                            self.assertEqual(runtime.last_context.status, "failed")
+                        else:
+                            await asyncio.wait_for(
+                                self.consume_remaining_stream(stream), 2
+                            )
+                            self.assertEqual(runtime.last_context.status, "aborted")
+                        self.assertTrue(block.done)
+                execute.assert_not_awaited()
+
+    async def test_deferred_approvals_use_each_originating_stream(self):
+        runtime = self.runtime(None)
+        contexts = [
+            runtime.graph.create_context(
+                {"messages": MESSAGES[:1] + [{"role": "user", "content": name}]}
+            )
+            for name in ("one", "two")
+        ]
+        ready = [asyncio.Event(), asyncio.Event()]
+        blocks = []
+
+        async def reply(messages, tools, on_text, **selection):
+            name = next(m["content"] for m in messages if m["role"] == "user")
+            if messages[-1]["role"] != "tool":
+                return {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call(name, "printf " + name)],
+                }
+            return {"role": "assistant", "content": messages[-1]["content"]}
+
+        async def execute(call):
+            return call["id"]
+
+        async def consume(index):
+            async with aclosing(runtime.stream(context=contexts[index])) as stream:
+                async for chunk in stream:
+                    if chunk["type"] != "approval":
+                        continue
+                    block = chunk["block"]
+                    self.assertEqual(block.run_id, contexts[index].run_id)
+                    self.assertEqual(chunk["tool_call"]["id"], ("one", "two")[index])
+                    blocks.append(block)
+                    ready[index].set()
+                    await asyncio.wait_for(ready[1 - index].wait(), 2)
+                    block.resolve(True)
+
+        with (
+            patch.object(agent, "stream_reply", reply),
+            patch("example.core.events.execute_tool", execute),
+        ):
+            await asyncio.wait_for(asyncio.gather(consume(0), consume(1)), 5)
+        self.assertEqual(len(blocks), 2)
+        self.assertTrue(all(block.done for block in blocks))
+        self.assertEqual(
+            [context.state["messages"][-1]["content"] for context in contexts],
+            ["one", "two"],
+        )
+
     async def test_worker_failure_replies_instead_of_hanging(self):
         runtime = self.runtime()
         replies = [
@@ -622,6 +777,30 @@ class AgentTests(SharedLoopTests):
         self.assertIn(
             "worker failed", runtime.last_context.state["messages"][-2]["content"]
         )
+
+    async def test_missing_tool_reply_times_out_and_removes_subscription(self):
+        runtime = self.runtime()
+        registered = set(get_handler_registry().registry)
+        with (
+            patch("example.core.events.TOOL_REPLY_TIMEOUT", 0.01),
+            patch.object(runtime.events, "_reply", AsyncMock()),
+            patch.object(
+                agent,
+                "stream_reply",
+                AsyncMock(
+                    return_value={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [tool_call()],
+                    }
+                ),
+            ),
+            patch("example.core.events.execute_tool", AsyncMock(return_value="lost")),
+            self.assertRaises(TimeoutError),
+        ):
+            await asyncio.wait_for(collect(runtime), 2)
+        self.assertEqual(runtime.last_context.status, "failed")
+        self.assertEqual(set(get_handler_registry().registry), registered)
 
     async def test_tool_reply_arriving_before_publication_returns_is_retained(self):
         runtime = self.runtime()

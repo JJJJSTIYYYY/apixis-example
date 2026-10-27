@@ -29,13 +29,18 @@ async def _run(args: argparse.Namespace) -> None:
                 args.prompt,
                 approve_tools=args.approve_tools,
                 max_steps=args.max_steps,
+                max_snapshots=args.max_snapshots,
                 provider=args.provider,
                 model=args.model,
             )
         else:
             from .app import chat_loop
 
-            await chat_loop(provider=args.provider, model=args.model)
+            await chat_loop(
+                provider=args.provider,
+                model=args.model,
+                max_snapshots=args.max_snapshots,
+            )
     finally:
         await shutdown_core()
 
@@ -67,11 +72,19 @@ def main() -> None:
         default=32,
         help="单次模式的执行步数上限（默认 32）",
     )
+    parser.add_argument(
+        "--max-snapshots",
+        type=int,
+        default=16,
+        help="每次运行保留的最近快照数量（默认 16）",
+    )
     args = parser.parse_args()
     if args.approve_tools and args.prompt is None:
         parser.error("--approve-tools requires --prompt")
     if args.max_steps <= 0:
         parser.error("--max-steps must be positive")
+    if args.max_snapshots <= 0:
+        parser.error("--max-snapshots must be positive")
     try:
         asyncio.run(_run(args))
     except KeyboardInterrupt:

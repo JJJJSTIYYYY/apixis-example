@@ -74,7 +74,7 @@ def build_agent(
         call, *remaining = state["tool_calls"]
         name = call["function"]["name"]
         # Wait for user approval via interrupt on every attempt, including retries.
-        approval_data = {"tool_call": call}
+        approval_data = {"tool_call": call, "stream_writer": writer}
         approved = await interrupt(data=approval_data)
         if approved:
             writer({"type": "tool_start", "name": name})

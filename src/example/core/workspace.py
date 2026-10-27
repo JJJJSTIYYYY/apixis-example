@@ -57,4 +57,7 @@ def build_workspace_graph() -> NodeGraph:
     manager.add_node(environment_node, "environment")
     manager.add_node(summary_node, "summary")
     # Both branches route to summary; Apixis joins the batch before dispatching it.
-    return manager.compile_graph(entry_point=["directory", "environment"])
+    # This transient metadata is collected again each turn, never restored.
+    return manager.compile_graph(
+        entry_point=["directory", "environment"], no_snapshot=True
+    )

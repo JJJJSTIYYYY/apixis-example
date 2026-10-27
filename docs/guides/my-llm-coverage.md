@@ -20,6 +20,8 @@ reasoning_effort.supports 表达，不再使用 supports_reasoning/supports_reas
 
 六供应商仍为 deepseek、kimi、openai、anthropic、gemini、ollama，18 预设与来源见
 [模型预设](model-presets.md)。本次迁移没有更新模型清单，核查日期仍为 2026-10-16。
+新增 `kimi-cn` 作为同一 Kimi 目录的中国站连接预设，复用全部模型配置与密钥环境变量，
+仅覆盖 `base_url` 为 `https://api.moonshot.cn/v1`；原 `kimi` 继续使用国际站。
 
 DeepSeek/Kimi 使用 Chat，OpenAI 使用 Responses，其余使用各自原生协议。
 DeepSeek 与 Kimi K2.x 的 thinking 通过 `$.extra_body.thinking` 配置；K3 在模型层 omit
@@ -37,7 +39,7 @@ DeepSeek/K2.x 使用 max_tokens，K3 使用 max_completion_tokens；两家预设
 模型切换只更新选择，保留同一运行时、编译图、完整消息和失败快照，/retry 使用新选择恢复。
 已提交工具结果继续回传，不重复执行。启动和选择模型不要求凭证，请求时才检查。
 
-供应商专属凭证变量优先于 LLM_API_KEY，见 [README](../README.md#启动)。
+供应商专属凭证变量优先于 LLM_API_KEY，见 [README](../../README.md#启动)。
 密钥使用 Provider 的 input Parameter：通常路径为 $.api_key；Ollama 可选认证使用
 $.extra_headers.Authorization，应用填入完整 Bearer 值。没有密钥的本地 Ollama 不添加认证头。
 这是连接配置，不是生成请求体或协议转换；密钥不作为消息或 extra_body 发送。
@@ -63,6 +65,12 @@ details 是可读取的原生错误信息，本项目不要求它满足普通字
 返回独立 Usage（input/output/total/cached/reasoning），未报告字段为 None。
 失败不覆盖上次成功用量，并发时记录最后完成调用；用量不写入对话消息。
 
+应用现在通过 `stream_reply(on_usage=...)` 回调读取该公开接口，并发送独立的 Apixis
+`type="usage"` 图流事件。`/usage` 查看当前用户会话最近 20 条完成请求记录；缺失字段保留
+None，显示为 `—`，不估算价格或缺失 token。DeepSeek/Kimi 使用
+`usage_mode=Config(default_value="stream_options")` 请求用量尾帧；参数组装与用量解析仍由
+my-llm-py 完成。记录存于运行时有界队列，退出用户清空，不进入 SQLite、图 state 或快照。
+
 ## 语义损失
 
 保留 1.3.2 默认的 `semantic_loss_protocol="raise"`。目标协议无法表达支持内容时，
@@ -75,9 +83,8 @@ UI 提示切回兼容供应商后重试或 /new，新选择本身不清空历史
 
 ## 验证
 
-[1.3.2 迁移报告](live-e2e-1.3.2-2026-10-25.md)记录全部离线测试和在线流程。
+[验证说明](../validation.md)介绍本地检查与真实供应商测试方法。
 离线使用真实官方 SDK 与 HTTPX MockTransport，覆盖六供应商、18 预设、工具历史和持久化、
 取消及失败恢复、语义损失后切回重试，以及新的实例用量接口。
 
-1.0.0、1.0.1、1.1.0 报告保留为历史验证，不能代表当前接口。先前提及的 1.1.0 异常
-详情视图差异不影响本项目按键读取路径，也未在应用增加兼容处理。
+返回[文档索引](../README.md)。

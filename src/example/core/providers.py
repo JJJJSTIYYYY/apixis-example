@@ -1,7 +1,9 @@
 """Public MyLLM profiles; model catalogue verified on 2026-10-16.
 
-See docs/model-presets.md for sources. The first model is each provider's default.
+See docs/guides/model-presets.md for sources. The first model is each provider's default.
 """
+
+from dataclasses import replace
 
 from my_llm import Attribute, Config, ModelProfile, Parameter, ProviderProfile, omit
 
@@ -11,6 +13,7 @@ PROVIDERS: dict[str, ProviderProfile] = {
     "deepseek": ProviderProfile(
         protocol=Config(default_value="openai_chat"),
         base_url=Config(default_value="https://api.deepseek.com/v1"),
+        usage_mode=Config(default_value="stream_options"),
         reasoning_effort=Parameter(path="$.reasoning_effort"),
         reasoning_effort_mapping=Config(
             default_value={"medium": "high", "xhigh": "high"}
@@ -34,6 +37,7 @@ PROVIDERS: dict[str, ProviderProfile] = {
     "kimi": ProviderProfile(
         protocol=Config(default_value="openai_chat"),
         base_url=Config(default_value="https://api.moonshot.ai/v1"),
+        usage_mode=Config(default_value="stream_options"),
         reasoning_enable=Parameter(
             path="$.extra_body.thinking", default_value={"type": "enabled"}
         ),
@@ -137,6 +141,12 @@ PROVIDERS: dict[str, ProviderProfile] = {
     ),
 }
 
+# The regional connection shares Kimi's model and capability declarations.
+PROVIDERS["kimi-cn"] = replace(
+    PROVIDERS["kimi"],
+    base_url=Config(default_value="https://api.moonshot.cn/v1"),
+)
+
 API_KEY_ENV: dict[str, tuple[str, ...]] = {
     "deepseek": ("DEEPSEEK_API_KEY",),
     "kimi": ("KIMI_API_KEY", "MOONSHOT_API_KEY"),
@@ -145,3 +155,4 @@ API_KEY_ENV: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "ollama": (),
 }
+API_KEY_ENV["kimi-cn"] = API_KEY_ENV["kimi"]
